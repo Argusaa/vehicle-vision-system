@@ -324,6 +324,7 @@ const App = {
 
     const renderSynchronizedResult = (row) => {
       if (!resultBox || !row) return;
+      if (row.annotated_image) this.showAnnotatedPreview('police', row.annotated_image);
       const now = Number.isFinite(video.currentTime) ? video.currentTime : row.time_sec;
       const lag = Math.max(0, now - row.time_sec);
       resultBox.innerHTML = `${row.gesture_cn}<br><small>confidence ${(row.confidence * 100).toFixed(0)}%</small><br><small>video ${now.toFixed(1)}s / label ${row.time_sec.toFixed(1)}s / lag ${lag.toFixed(1)}s</small>`;
