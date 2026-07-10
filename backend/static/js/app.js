@@ -7,7 +7,112 @@ const App = {
   assistantHistory: [],
   assistantThinking: false,
   assistantRecognition: null,
-  assistantVoiceEnabled: true,
+  assistantVoiceEnabled: false,
+  _agentVoice: null,
+  _agentSpeaking: false,
+  alertTypes: [],
+  currentReplayId: null,
+  alertTimelineSkip: 0,
+  alertTimelineHasMore: false,
+  replayEvents: [],
+  replayStepIndex: 0,
+  replayPlayTimer: null,
+  agentOpenCount: 0,
+  _recentAlertKeys: {},
+  agentDragMoved: false,
+  agentSpeechTimer: null,
+  _agentPointerId: null,
+  agentMonitorTimer: null,
+  agentBriefing: null,
+  agentLastBriefKey: '',
+  focusedAlert: null,
+  currentView: '',
+  logSseSource: null,
+  LOG_CATEGORY_LABELS: {
+    lpr: '车牌识别',
+    police_gesture: '交警手势',
+    owner_gesture: '车主手势',
+    alert: '告警',
+    user: '用户操作',
+    system: '系统运行',
+    agent: '智能体决策',
+  },
+  LOG_CATEGORY_COLORS: {
+    lpr: '#6A9BCC',
+    police_gesture: '#C9943A',
+    owner_gesture: '#6B8F47',
+    alert: '#C0453A',
+    user: '#8B7EC8',
+    system: '#64748b',
+    agent: '#0891b2',
+  },
+
+  /** 构建助手请求：仅携带用户显式选定的告警，不再静默绑定「最近一条」 */
+  buildAssistantPayload(question) {
+    const body = { question };
+    const alertId = this.getExplicitAlertId();
+    if (alertId) body.alert_id = alertId;
+    return body;
+  },
+
+  /** 当前显式选定的告警 ID（仅以 focusedAlert 为准；回放页打开不等于助手上下文） */
+  getExplicitAlertId() {
+    return this.focusedAlert?.id ?? null;
+  },
+
+  /** 用户显式选定某条告警作为对话上下文 */
+  setFocusedAlert(alert) {
+    if (!alert || !alert.id) return;
+    this.focusedAlert = {
+      id: alert.id,
+      title: alert.title || '系统提醒',
+      level: alert.level || 'info',
+    };
+    this.updateAssistantContextUI();
+  },
+
+  /** 取消当前选定的告警上下文（不影响告警回放面板本身） */
+  clearFocusedAlert() {
+    this.focusedAlert = null;
+    this.updateAssistantContextUI();
+  },
+
+  updateAssistantContextUI() {
+    const bar = document.getElementById('assistant-context-bar');
+    const titleEl = document.getElementById('assistant-context-title');
+    const subtitle = document.getElementById('agent-subtitle');
+
+    if (this.focusedAlert && bar && titleEl) {
+      bar.classList.remove('hidden');
+      titleEl.textContent = this.focusedAlert.title;
+      if (subtitle) subtitle.textContent = `正在讨论：${this.focusedAlert.title}`;
+      return;
+    }
+
+    if (bar) bar.classList.add('hidden');
+    if (titleEl) titleEl.textContent = '';
+    if (subtitle && !this.agentOpenCount) {
+      subtitle.textContent = '感知 · 决策 · 告警推送';
+    } else if (subtitle && this.agentOpenCount > 0) {
+      subtitle.textContent = `发现 ${this.agentOpenCount} 条未处理告警（请先选定一条再提问）`;
+    }
+  },
+
+  /**
+   * 快捷提问（根因/建议/升级/影响）
+   * requireAlert=true 时若无选定告警，由后端返回「您指的是哪条告警？」
+   */
+  askAboutAlert(question) {
+    this.askAssistant(question);
+  },
+
+  /** 用户能听懂的简短告警话术 */
+  alertToUserSpeech(alert) {
+    const title = alert.title || '系统提醒';
+    const summary = alert.summary || '';
+    if (summary && summary.length < 60) return summary;
+    return title;
+  },
 
   init() {
     this.bindTabs();
@@ -144,6 +249,9 @@ const App = {
   },
 
   logout() {
+    if (this.token) {
+      fetch('/api/auth/logout', { method: 'POST', headers: this.headers() }).catch(() => {});
+    }
     this.token = '';
     localStorage.removeItem('token');
     this.stopStream();
@@ -156,10 +264,56 @@ const App = {
     this.wsAlerts = new WebSocket(`${proto}://${location.host}/ws/alerts`);
     this.wsAlerts.onmessage = (e) => {
       const data = JSON.parse(e.data);
-      if (data.type === 'alert') this.showToast(data);
-      this.prependAlert(data);
+      if (data.type === 'alert') this.handleIncomingAlert(data);
     };
-    this.wsAlerts.onclose = () => { this.wsAlerts = null; setTimeout(() => this.connectAlertWs(), 3000); };
+      this.wsAlerts.onopen = () => { var el = document.getElementById('stat-ws-conn'); if (el) el.textContent = '1'; };
+      this.wsAlerts.onclose = () => {
+        this.wsAlerts = null;
+        var _el = document.getElementById('stat-ws-conn'); if (_el) _el.textContent = '0';
+      setTimeout(() => { if (document.getElementById('main-page').classList.contains('active')) this.connectAlertWs(); }, 3000);
+    };
+  },
+
+  connectSSE() {
+    if (this.sseSource) return;
+    this.sseSource = new EventSource('/api/monitor/stream');
+    this.sseSource.onopen = () => {
+      document.getElementById('stat-sse-conn') && (document.getElementById('stat-sse-conn').textContent = '1');
+    };
+    this.sseSource.addEventListener('connected', (e) => {
+      console.log('SSE connected:', JSON.parse(e.data));
+    });
+    this.sseSource.onmessage = (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data.type === 'alert') this.handleIncomingAlert(data);
+      } catch (err) {}
+    };
+    this.sseSource.onerror = () => {
+      document.getElementById('stat-sse-conn') && (document.getElementById('stat-sse-conn').textContent = '0');
+    };
+  },
+
+  disconnectSSE() {
+    if (this.sseSource) { this.sseSource.close(); this.sseSource = null; }
+    var ssc2 = document.getElementById('stat-sse-conn'); if (ssc2) ssc2.textContent = '0';
+  },
+
+  handleIncomingAlert(alert) {
+    if (!alert) return;
+    const now = Date.now();
+    const key = alert.id
+      ? `id:${alert.id}`
+      : `et:${alert.event_type || ''}:${alert.title || ''}`;
+    const last = this._recentAlertKeys[key] || 0;
+    if (now - last < 60000) return;
+    this._recentAlertKeys[key] = now;
+    Object.keys(this._recentAlertKeys).forEach(k => {
+      if (now - this._recentAlertKeys[k] > 120000) delete this._recentAlertKeys[k];
+    });
+    this.showToast(alert);
+    this.prependLiveAlert(alert);
+    this.onAgentAlert(alert);
   },
 
   showToast(alert) {
@@ -383,6 +537,414 @@ const App = {
     } catch (e) { alert(e.message); }
   },
 
+  async loadAlertTypes() {
+    try {
+      const types = await this.api('/api/monitor/alerts/event-types');
+      this.alertTypes = types;
+      const filterSelect = document.getElementById('alert-filter-type');
+      const testSelect = document.getElementById('test-alert-type');
+      const options = types.map(t => `<option value="${t.key}">${t.name} (${t.default_level})</option>`).join('');
+      if (filterSelect) filterSelect.innerHTML = '<option value="">全部类型</option>' + options;
+      if (testSelect) testSelect.innerHTML = '<option value="">选择测试类型</option>' + options;
+    } catch (e) {}
+  },
+
+  async triggerTypeAlert() {
+    const sel = document.getElementById('test-alert-type');
+    if (!sel || !sel.value) return;
+    try {
+      const data = await this.api(`/api/monitor/alerts/test/${sel.value}`, { method: 'POST' });
+      this.showToast({ level: data.level, title: data.title, summary: data.summary });
+      this.loadAlerts();
+      this.loadAlertAnalytics();
+      this.loadAgentActivity();
+    } catch (e) { alert(e.message); }
+  },
+
+  async loadAgentActivity() {
+    const el = document.getElementById('agent-activity');
+    if (!el) return;
+    try {
+      const list = await this.api('/api/monitor/logs?category=agent&limit=15');
+      if (!list.length) {
+        el.innerHTML = '<p style="color:var(--text-muted)">暂无智能体日志，触发识别或告警后会自动记录</p>';
+        return;
+      }
+      el.innerHTML = list.map(log => {
+        const time = log.created_at ? new Date(log.created_at).toLocaleString() : '';
+        const levelClass = (log.level || 'INFO').toLowerCase();
+        return `<div class="agent-activity-item ${levelClass}">
+          <span class="agent-activity-time">${time}</span>
+          <span class="agent-activity-level">${log.level || 'INFO'}</span>
+          <span class="agent-activity-msg">${this.escHtml(log.message || '')}</span>
+        </div>`;
+      }).join('');
+    } catch (e) {
+      el.innerHTML = '<p style="color:var(--text-muted)">加载失败</p>';
+    }
+  },
+
+  async cleanupNoiseAlerts() {
+    if (!confirm('将测试告警和可选配置缺失类历史告警标记为已处理，是否继续？')) return;
+    try {
+      const data = await this.api('/api/monitor/alerts/cleanup-noise', { method: 'POST' });
+      alert(`已清理 ${data.resolved} 条噪声告警`);
+      this.loadAlerts();
+      this.loadAlertAnalytics();
+    } catch (e) { alert(e.message); }
+  },
+
+  async loadAlertNotifications() {
+    const el = document.getElementById('alert-notifications');
+    if (!el) return;
+    try {
+      const conn = await this.api('/api/monitor/connections');
+      const cfg = await this.api('/api/monitor/config');
+      el.innerHTML = `
+        <div class="notification-card on"><strong>WebSocket</strong><span>${conn.websocket_clients} 个在线连接</span></div>
+        <div class="notification-card ${cfg.sse_enabled ? 'on' : 'off'}"><strong>SSE 实时推送</strong><span>${cfg.sse_enabled ? '已启用' : '未启用'}</span></div>
+        <div class="notification-card ${cfg.webhook_enabled ? 'on' : 'off'}"><strong>Webhook</strong><span>${cfg.webhook_enabled ? (cfg.webhook_url_configured ? '已启用' : '已启用但未配置 URL') : '未启用'}</span></div>
+        <div class="notification-card ${cfg.email_enabled ? 'on' : 'off'}"><strong>邮件通知</strong><span>${cfg.email_enabled ? (cfg.email_configured ? '已启用' : '已启用但 SMTP 不完整') : '未启用'}</span></div>
+      `;
+    } catch (e) {
+      el.innerHTML = '<p style="color:var(--text-muted)">通知状态加载失败</p>';
+    }
+  },
+
+  async testNotifications(channel) {
+    try {
+      const data = await this.api(`/api/monitor/notifications/test?channel=${encodeURIComponent(channel || 'all')}`, { method: 'POST' });
+      const lines = Object.entries(data.channels || {}).map(([name, result]) => {
+        if (typeof result === 'object' && result !== null) {
+          if (result.ok) return `${name}: 成功`;
+          return `${name}: 失败${result.reason ? `（${result.reason}）` : ''}`;
+        }
+        return `${name}: ${result ? '成功' : '失败'}`;
+      });
+      alert('通知测试完成\n\n' + (lines.join('\n') || '无可用渠道'));
+      this.loadAlertNotifications();
+    } catch (e) { alert(e.message); }
+  },
+
+  async loadAlertConfig() {
+    const el = document.getElementById('alert-config');
+    if (!el) return;
+    try {
+      const cfg = await this.api('/api/monitor/config');
+      el.innerHTML = `
+        <div class="config-grid">
+          <div><span>连续失败阈值</span><strong>${cfg.failure_threshold}</strong></div>
+          <div><span>滑窗秒数</span><strong>${cfg.window_seconds}</strong></div>
+          <div><span>冷却秒数</span><strong>${cfg.cooldown_seconds}</strong></div>
+          <div><span>低置信度阈值</span><strong>${cfg.low_confidence_threshold}</strong></div>
+          <div><span>Token 上限</span><strong>${cfg.token_limit}</strong></div>
+          <div><span>LLM 模型</span><strong>${cfg.llm_model || '模板降级'}</strong></div>
+          <div><span>LLM 状态</span><strong>${cfg.llm_configured ? '已配置' : '未配置（模板告警）'}</strong></div>
+          <div><span>巡检周期</span><strong>60 秒</strong></div>
+        </div>`;
+    } catch (e) {
+      el.innerHTML = '<p style="color:var(--text-muted)">配置加载失败</p>';
+    }
+  },
+
+  // ── 系统日志 ──
+  onLogDatetimeChange(el) {
+    if (!el) return;
+    el.classList.toggle('has-value', !!el.value);
+  },
+
+  syncLogDatetimeState() {
+    ['log-start', 'log-end'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) this.onLogDatetimeChange(el);
+    });
+  },
+
+  initSelectChevrons() {
+    document.querySelectorAll('.select-input-wrap select').forEach(select => {
+      const wrap = select.closest('.select-input-wrap');
+      if (!wrap || wrap.dataset.chevronBound) return;
+      wrap.dataset.chevronBound = '1';
+      const close = () => wrap.classList.remove('is-open');
+      select.addEventListener('mousedown', () => wrap.classList.add('is-open'));
+      select.addEventListener('blur', close);
+      select.addEventListener('change', close);
+    });
+  },
+
+  resetLogFilters(reload = true) {
+    const ids = ['log-category', 'log-level', 'log-search', 'log-user', 'log-start', 'log-end'];
+    const defaults = { 'log-category': '', 'log-level': '', 'log-search': '', 'log-user': '', 'log-start': '', 'log-end': '' };
+    ids.forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.value = defaults[id] ?? '';
+    });
+    this.syncLogDatetimeState();
+    if (reload) this.loadLogs();
+  },
+
+  logCategoryLabel(category) {
+    return this.LOG_CATEGORY_LABELS[category] || category;
+  },
+
+  getLogFilterParams() {
+    return {
+      cat: (document.getElementById('log-category') && document.getElementById('log-category').value) || '',
+      level: (document.getElementById('log-level') && document.getElementById('log-level').value) || '',
+      search: (document.getElementById('log-search') && document.getElementById('log-search').value) || '',
+      userId: (document.getElementById('log-user') && document.getElementById('log-user').value) || '',
+      start: (document.getElementById('log-start') && document.getElementById('log-start').value) || '',
+      end: (document.getElementById('log-end') && document.getElementById('log-end').value) || '',
+    };
+  },
+
+  logMatchesFilters(log, filters) {
+    if (!log) return false;
+    if (filters.cat && log.category !== filters.cat) return false;
+    if (filters.level && log.level !== filters.level) return false;
+    if (filters.userId && String(log.user_id || '') !== String(filters.userId)) return false;
+    if (filters.search) {
+      const q = filters.search.toLowerCase();
+      const msg = String(log.message || '').toLowerCase();
+      if (!msg.includes(q)) return false;
+    }
+    if (filters.start) {
+      const ts = new Date(log.created_at).getTime();
+      if (ts < new Date(filters.start).getTime()) return false;
+    }
+    if (filters.end) {
+      const ts = new Date(log.created_at).getTime();
+      if (ts > new Date(filters.end).getTime()) return false;
+    }
+    return true;
+  },
+
+  renderLogRow(log, live) {
+    const liveClass = live ? ' log-row-live' : '';
+    return `
+      <div class="log-row${liveClass}" onclick="App.showLogDetail('${this.escAttr(JSON.stringify(log))}')">
+        <span>${new Date(log.created_at).toLocaleString()}</span>
+        <span class="level-${log.level}">${log.level}</span>
+        <span>${this.escHtml(this.logCategoryLabel(log.category))}</span>
+        <span>${this.escHtml(log.message)}</span>
+        <span>${log.user_id || '-'}</span>
+      </div>`;
+  },
+
+  renderLogTable(logs) {
+    const table = document.getElementById('log-table');
+    if (!table) return;
+    const header = '<div class="log-row header"><span>时间</span><span>级别</span><span>类别</span><span>消息</span><span>用户</span></div>';
+    const rows = (logs || []).map(l => this.renderLogRow(l, false)).join('');
+    table.innerHTML = header + (rows || '<p style="padding:1rem;color:var(--text-muted);">暂无符合条件的日志</p>');
+  },
+
+  prependLiveLog(log) {
+    if (!this.logMatchesFilters(log, this.getLogFilterParams())) return;
+    const table = document.getElementById('log-table');
+    if (!table) return;
+    const empty = table.querySelector('p');
+    if (empty) empty.remove();
+    if (!table.querySelector('.log-row.header')) {
+      table.innerHTML = '<div class="log-row header"><span>时间</span><span>级别</span><span>类别</span><span>消息</span><span>用户</span></div>';
+    }
+    const header = table.querySelector('.log-row.header');
+    header.insertAdjacentHTML('afterend', this.renderLogRow(log, true));
+    const rows = table.querySelectorAll('.log-row:not(.header)');
+    if (rows.length > 100) rows[rows.length - 1].remove();
+    setTimeout(() => {
+      const first = table.querySelector('.log-row-live');
+      if (first) first.classList.remove('log-row-live');
+    }, 2500);
+    this.loadLogStats();
+  },
+
+  renderLogStats(stats) {
+    const statsPanel = document.getElementById('log-stats-panel');
+    const statsEl = document.getElementById('log-stats');
+    const chartsEl = document.getElementById('log-charts');
+    if (!statsPanel || !statsEl || !chartsEl || !stats) return;
+    statsPanel.style.display = 'block';
+
+    const catHtml = Object.entries(stats.by_category || {}).map(([k, v]) =>
+      `<span class="badge">${this.escHtml(this.logCategoryLabel(k))}: ${v}</span>`
+    ).join('');
+    statsEl.innerHTML = `
+      <span>${stats.hours || 24}h 总计: <b>${stats.total}</b> 条</span>
+      ${catHtml}
+      ${Object.entries(stats.by_level || {}).map(([k,v]) => `<span class="badge level-${k}">${k}: ${v}</span>`).join('')}
+    `;
+
+    const ranked = stats.category_ranked || [];
+    const maxCat = Math.max(...ranked.map(c => c.count), 1);
+    let categoryHtml = '<div class="log-chart-panel"><h4>类别分布</h4><div class="dist-bars">';
+    for (const item of ranked) {
+      const pct = Math.round(item.count / maxCat * 100);
+      const color = this.LOG_CATEGORY_COLORS[item.key] || '#9B9890';
+      categoryHtml += `<div class="dist-row"><span class="dist-label dist-label-wide">${this.escHtml(item.name)}</span>
+        <div class="dist-bar-track"><div class="dist-bar-fill" style="width:${pct}%;background:${color};"></div></div>
+        <span class="dist-count">${item.count}</span></div>`;
+    }
+    categoryHtml += ranked.length ? '</div></div>' : '<p class="log-chart-empty">暂无类别数据</p></div>';
+
+    const hourly = stats.hour_trend || [];
+    const maxHour = Math.max(...hourly.map(h => h.count), 1);
+    let hourHtml = '<div class="log-chart-panel"><h4>时间趋势</h4><div class="hourly-chart log-hourly-chart">';
+    for (const h of hourly) {
+      const label = h.hour ? h.hour.slice(11, 16) : '';
+      const hPct = Math.max(4, Math.round(h.count / maxHour * 100));
+      hourHtml += `<div class="hourly-bar" title="${this.escHtml(h.hour || '')}: ${h.count}条">
+        <div class="hourly-fill" style="height:${hPct}%;"></div>
+        <span class="hourly-label">${label}</span>
+      </div>`;
+    }
+    hourHtml += hourly.length ? '</div></div>' : '<p class="log-chart-empty">暂无趋势数据</p></div>';
+
+    chartsEl.innerHTML = categoryHtml + hourHtml;
+  },
+
+  async loadLogStats() {
+    try {
+      const hoursEl = document.getElementById('log-stats-hours');
+      const hours = hoursEl ? hoursEl.value : 24;
+      const stats = await this.api(`/api/monitor/logs/stats?hours=${hours}`);
+      this.renderLogStats(stats);
+    } catch (e) {}
+  },
+
+  connectLogStream() {
+    if (this.logSseSource) return;
+    const statusEl = document.getElementById('log-stream-status');
+    const btn = document.getElementById('log-stream-btn');
+    this.logSseSource = new EventSource('/api/monitor/logs/stream');
+    this.logSseSource.onopen = () => {
+      if (statusEl) { statusEl.textContent = '监听中'; statusEl.className = 'conn-status connected'; }
+      if (btn) btn.textContent = '停止监听';
+    };
+    this.logSseSource.onmessage = (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data.type === 'log') this.prependLiveLog(data);
+      } catch (err) {}
+    };
+    this.logSseSource.onerror = () => {
+      if (statusEl) { statusEl.textContent = '重连中...'; statusEl.className = 'conn-status reconnecting'; }
+    };
+  },
+
+  disconnectLogStream() {
+    if (this.logSseSource) {
+      this.logSseSource.close();
+      this.logSseSource = null;
+    }
+    const statusEl = document.getElementById('log-stream-status');
+    const btn = document.getElementById('log-stream-btn');
+    if (statusEl) { statusEl.textContent = '未连接'; statusEl.className = 'conn-status'; }
+    if (btn) btn.textContent = '实时监听';
+  },
+
+  toggleLogStream() {
+    if (this.logSseSource) this.disconnectLogStream();
+    else this.connectLogStream();
+  },
+
+  async loadLogs() {
+    try {
+      const filters = this.getLogFilterParams();
+
+      let url = '/api/monitor/logs?limit=100';
+      if (filters.cat) url += '&category=' + filters.cat;
+      if (filters.level) url += '&level=' + filters.level;
+      if (filters.search) url += '&search=' + encodeURIComponent(filters.search);
+      if (filters.userId) url += '&user_id=' + filters.userId;
+      if (filters.start) url += '&start=' + new Date(filters.start).toISOString();
+      if (filters.end) url += '&end=' + new Date(filters.end).toISOString();
+
+      const data = await this.api(url);
+      this.renderLogTable(data);
+      await this.loadLogStats();
+    } catch (e) {
+      document.getElementById('log-table').innerHTML = `<p style="padding:1rem;color:var(--danger);">加载日志失败: ${e.message}</p>`;
+    }
+  },
+
+  showLogDetail(jsonStr) {
+    try {
+      const log = JSON.parse(jsonStr);
+      let detailHtml = '';
+      if (log.detail_json && typeof log.detail_json === 'object') {
+        detailHtml = `<pre class="replay-detail" style="max-height:200px;overflow-y:auto;">${JSON.stringify(log.detail_json, null, 2)}</pre>`;
+      }
+      alert(`日志详情\n\n时间: ${new Date(log.created_at).toLocaleString()}\n级别: ${log.level}\n类别: ${log.category}\n消息: ${log.message}\n${detailHtml ? '详情: 见下方' : ''}`);
+    } catch (e) {}
+  },
+
+  exportLogs(format) {
+    const rows = document.querySelectorAll('#log-table .log-row:not(.header)');
+    if (rows.length === 0) { alert('没有可导出的日志'); return; }
+    const data = [];
+    rows.forEach(r => {
+      const cells = r.querySelectorAll('span');
+      data.push({
+        time: cells[0] ? cells[0].textContent : '',
+        level: cells[1] ? cells[1].textContent : '',
+        category: cells[2] ? cells[2].textContent : '',
+        message: cells[3] ? cells[3].textContent : '',
+        user: cells[4] ? cells[4].textContent : '-',
+      });
+    });
+    let content, mime, ext;
+    if (format === 'csv') {
+      content = '时间,级别,类别,消息,用户\n' + data.map(d => `"${d.time}","${d.level}","${d.category}","${d.message}","${d.user}"`).join('\n');
+      mime = 'text/csv'; ext = 'csv';
+    } else {
+      content = JSON.stringify(data, null, 2);
+      mime = 'application/json'; ext = 'json';
+    }
+    const blob = new Blob(['\uFEFF' + content], { type: mime + ';charset=utf-8' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+    a.download = `logs_${new Date().toISOString().slice(0,10)}.${ext}`;
+    a.click();
+  },
+
+  healthLabel(status) {
+    const labels = { healthy: '健康', warning: '警告', critical: '严重', unknown: '未知', error: '异常' };
+    return labels[status] || status || '-';
+  },
+
+  escHtml(text) {
+    if (text == null) return '';
+    return String(text).replace(/[&<>'"]/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[m]));
+  },
+
+  /** 助手气泡：转义 HTML 并渲染基础 Markdown（**加粗**、换行） */
+  formatAssistantText(text) {
+    if (text == null) return '';
+    let s = this.escHtml(text);
+    s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    s = s.replace(/\n/g, '<br>');
+    return s;
+  },
+
+  stripMarkdown(text) {
+    if (!text) return '';
+    return String(text)
+      .replace(/\*\*([^*]+)\*\*/g, '$1')
+      .replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, '$1')
+      .replace(/^#+\s*/gm, '');
+  },
+
+  escAttr(text) {
+    if (text == null) return '';
+    return String(text).replace(/[&<>'"]/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[m]));
+  },
+
+  // ── 日期时间默认值 ──
+  initDatetimeDefaults() {
+    // 日志中心默认不按时间筛选，避免「结束时间」停留在页面打开时刻导致新日志被过滤
+  },
+
+  // ── 告警智能体可视化 ──
   initAssistant() {
     const input = document.getElementById('assistant-input');
     if (input) {
