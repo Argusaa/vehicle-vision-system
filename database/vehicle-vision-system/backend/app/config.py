@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     police_yolo_keypoint_conf: float = 0.15
 
     class Config:
-        env_file = ".env"
+        env_file = str(BASE_DIR / ".env")
         extra = "ignore"
 
     @property
@@ -62,6 +62,12 @@ class Settings(BaseSettings):
     @property
     def data_dir(self) -> Path:
         p = self.base_dir / "data"
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
+    @property
+    def hls_dir(self) -> Path:
+        p = self.base_dir / "hls"
         p.mkdir(parents=True, exist_ok=True)
         return p
 
