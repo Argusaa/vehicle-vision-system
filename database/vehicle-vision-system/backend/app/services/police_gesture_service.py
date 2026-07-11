@@ -139,6 +139,7 @@ class PoliceGestureService:
             self._pg = PG
             self._bla = BoneLengthAngle()
             self._g_model = GestureRecognitionModel(1)
+            self._g_model.ckpt_path = self.ctpgr_root / "checkpoints" / settings.police_gesture_model
             self._g_model.load_ckpt(allow_new=False)
             self._g_model.eval()
 

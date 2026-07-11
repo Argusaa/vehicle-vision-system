@@ -42,7 +42,8 @@ class Settings(BaseSettings):
     alert_failure_threshold: int = 5
     low_confidence_threshold: float = 0.4
     police_pose_backend: str = "yolo"
-    police_yolo_pose_model: str = "yolo26m-pose.pt"
+    police_yolo_pose_model: str = "yolo11s-pose.pt"
+    police_gesture_model: str = "lstm_yolo11s.pt"
 
     class Config:
         env_file = str(BASE_DIR / ".env")
