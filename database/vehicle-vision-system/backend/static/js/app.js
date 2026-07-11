@@ -352,12 +352,16 @@ const App = {
     if (!file) return;
     if (module === 'lpr') this.clearLprDisplay();
     const isVideo = this.isVideoFile(file);
-    const endpoints = { lpr: '/api/lpr/recognize', police: '/api/police-gesture/recognize', owner: '/api/owner-gesture/recognize' };
+    const endpoints = { lpr: '/api/lpr/recognize', owner: '/api/owner-gesture/recognize' };
     const previewMap = { lpr: 'lpr-preview', police: 'police-preview', owner: 'owner-preview' };
     const resultMap = { lpr: 'lpr-results', police: 'police-result', owner: 'owner-result' };
     const preview = document.getElementById(previewMap[module]);
     const resultBox = document.getElementById(resultMap[module]);
     if (module === 'police') {
+      if (!isVideo) {
+        if (resultBox) resultBox.innerHTML = '<div class="result-banner error"><div class="result-title">交警手势仅支持视频或连续视频流</div></div>';
+        return;
+      }
       this.showPoliceUploadPreview(file, isVideo);
       if (isVideo) {
         if (resultBox) resultBox.innerHTML = '播放视频后开始实时识别...';

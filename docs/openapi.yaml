@@ -145,14 +145,18 @@ paths:
       summary: 查询 CCPD 测试集样本路径
       responses:
         '200': {description: 样本信息, content: {application/json: {schema: {$ref: '#/components/schemas/CCPDSampleResponse'}}}}
-  /api/police-gesture/recognize:
+  /api/police-gesture/recognize-video:
     post:
       tags: [交警手势识别]
-      summary: 上传图像或 GIF 识别交警手势
+      summary: 上传长视频识别交警手势
       security: [{bearerAuth: []}]
-      requestBody: {$ref: '#/components/requestBodies/ImageFile'}
+      parameters:
+        - {name: interval, in: query, schema: {type: integer, minimum: 1, maximum: 600, default: 1}}
+        - {name: max_results, in: query, schema: {type: integer, minimum: 1, maximum: 300, default: 300}}
+        - {name: max_sampled_frames, in: query, schema: {type: integer, minimum: 1, maximum: 5000, default: 900}}
+      requestBody: {$ref: '#/components/requestBodies/VideoFile'}
       responses:
-        '200': {description: 识别完成, content: {application/json: {schema: {$ref: '#/components/schemas/GestureResponse'}}}}
+        '200': {description: 视频识别完成}
         '500': {$ref: '#/components/responses/RecognitionFailure'}
   /api/police-gesture/gestures:
     get:

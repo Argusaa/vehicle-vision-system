@@ -17,7 +17,7 @@
 | 视频车牌识别 | 车辆车牌识别模块 | POST | `/api/lpr/recognize-video` | Bearer JWT（可选） | form-data：`file`（视频）；query：`interval=1..60` | `frame_count`、`results` | LPR 视频服务、文件存储、系统日志 |
 | 车牌识别历史 | 车辆车牌识别模块 | GET | `/api/lpr/history` | Bearer JWT（可选） | query：`skip`、`limit` | 记录数组：`id`、`plate_count`、`annotated_image`、`created_at` | 车牌记录、数据解密 |
 | CCPD 样本查询 | 车辆车牌识别模块 | GET | `/api/lpr/ccpd-sample` | 无需鉴权 | 无 | `samples`、`ccpd_root`、`message?` | CCPD 数据集文件 |
-| 交警手势识别 | 交警手势识别模块 | POST | `/api/police-gesture/recognize` | Bearer JWT（可选） | form-data：`file`（图片或 GIF） | `gesture`、`gesture_cn`、`confidence`、`keypoints`、`annotated_image`、`success`、`record_id` | MediaPipe 姿态检测、手势分类器、告警智能体、文件存储、手势记录、系统日志 |
+| 交警手势视频识别 | 交警手势识别模块 | POST | `/api/police-gesture/recognize-video` | Bearer JWT（可选） | form-data：`file`（视频），query：`interval`、`max_results`、`max_sampled_frames` | 采样帧结果、手势变化、命中数量 | CTPGR/YOLO 姿态检测、LSTM 时序分类、文件存储、系统日志 |
 | 交警手势字典 | 交警手势识别模块 | GET | `/api/police-gesture/gestures` | 无需鉴权 | 无 | 数组：`id`、`en`、`cn` | 交警手势字典 |
 | 交警手势历史 | 交警手势识别模块 | GET | `/api/police-gesture/history` | 无需鉴权 | query：`skip`、`limit` | 数组：`id`、`gesture`、`gesture_cn`、`confidence`、`annotated_image`、`created_at` | 交警手势记录 |
 | 车主手势识别与控车 | 车主手势控车模块 | POST | `/api/owner-gesture/recognize` | Bearer JWT（可选） | form-data：`file`（图片或 GIF） | `gesture`、`gesture_cn`、`confidence`、`action?`、`keypoints`、`annotated_image`、`record_id` | 手势识别服务、车辆状态、告警智能体、文件存储、手势记录、系统日志 |

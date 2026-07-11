@@ -80,7 +80,7 @@ SMTP_HOST=smtp.example.com    # 邮件通知
 | 端点 | 说明 |
 |------|------|
 | `POST /api/lpr/recognize` | 上传图片识别车牌 |
-| `POST /api/police-gesture/recognize` | 交警手势识别 |
+| `POST /api/police-gesture/recognize-video` | 长视频交警手势识别 |
 | `POST /api/owner-gesture/recognize` | 车主手势控车 |
 | `GET /api/monitor/alerts` | 告警历史 |
 | `GET /api/monitor/logs` | 系统日志 |

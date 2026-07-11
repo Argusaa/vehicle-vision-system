@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import contextlib
-import io
 import os
 import sys
 import threading
@@ -11,7 +10,6 @@ from typing import Any
 import cv2
 import numpy as np
 import torch
-from PIL import Image, ImageSequence
 
 from app.config import settings
 from app.utils.helpers import ndarray_to_base64
@@ -50,7 +48,6 @@ class PoliceGestureService:
     def __init__(self):
         self.ctpgr_root = (settings.base_dir / settings.ctpgr_data_path).resolve()
         self.input_size = (512, 512)
-        self.sequence_steps = 30
         self._predictor = None
         self._pg = None
         self._bla = None
@@ -154,30 +151,6 @@ class PoliceGestureService:
             model_path = settings.police_yolo_pose_model or "yolov8n-pose.pt"
             self._yolo_model = YOLO(model_path)
         return self._yolo_model
-
-    def _detect_best_frame(self, image_bytes: bytes) -> np.ndarray:
-        try:
-            pil_img = Image.open(io.BytesIO(image_bytes))
-            if getattr(pil_img, "is_animated", False):
-                best_frame = None
-                best_score = -1.0
-                for frame in ImageSequence.Iterator(pil_img):
-                    frame_np = cv2.cvtColor(np.array(frame.convert("RGB")), cv2.COLOR_RGB2BGR)
-                    score = cv2.Laplacian(cv2.cvtColor(frame_np, cv2.COLOR_BGR2GRAY), cv2.CV_64F).var()
-                    if score > best_score:
-                        best_score = score
-                        best_frame = frame_np
-                if best_frame is not None:
-                    return best_frame
-            return cv2.cvtColor(np.array(pil_img.convert("RGB")), cv2.COLOR_RGB2BGR)
-        except Exception:
-            pass
-
-        nparr = np.frombuffer(image_bytes, np.uint8)
-        image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        if image is None:
-            raise ValueError("Unable to parse image")
-        return image
 
     def _confidence(self, scores: np.ndarray, gesture_id: int) -> float:
         probs = torch.softmax(torch.from_numpy(scores.astype(np.float32)), dim=0).numpy()
@@ -382,21 +355,6 @@ class PoliceGestureService:
         scores = class_out[0].cpu().numpy()
         return {self.pg.OUT_ARGMAX: int(np.argmax(scores)), self.pg.OUT_SCORES: scores, self.pg.COORD_NORM: coord_norm}
 
-    def _classify_prepared_image(self, ctpgr_image: np.ndarray) -> dict[str, Any]:
-        try:
-            coord_norm = self._coord_from_prepared_image(ctpgr_image)
-        except ValueError as exc:
-            return self._no_gesture_payload(ctpgr_image, str(exc))
-        state = self.create_sequence_state()
-        sequence_results = [self._classify_coord(coord_norm, state) for _ in range(self.sequence_steps)]
-        tail = sequence_results[-8:]
-        nonzero_tail = [r for r in tail if int(r[self.pg.OUT_ARGMAX]) > 0]
-        if nonzero_tail:
-            result = max(nonzero_tail, key=lambda r: self._confidence(r[self.pg.OUT_SCORES], int(r[self.pg.OUT_ARGMAX])))
-        else:
-            result = sequence_results[-1]
-        return self._result_payload(ctpgr_image, result)
-
     def recognize_prepared_frame_continuous(
         self,
         ctpgr_image: np.ndarray,
@@ -408,17 +366,6 @@ class PoliceGestureService:
             return self._no_gesture_payload(ctpgr_image, str(exc))
         result = self._classify_coord(coord_norm, state)
         return self._result_payload(ctpgr_image, result)
-
-    def recognize_image(self, image: np.ndarray) -> dict[str, Any]:
-        ctpgr_image = cv2.resize(image, self.input_size, interpolation=cv2.INTER_AREA)
-        return self._classify_prepared_image(ctpgr_image)
-
-    def recognize(self, image_bytes: bytes) -> dict[str, Any]:
-        image = self._detect_best_frame(image_bytes)
-        return self.recognize_image(image)
-
-    def recognize_frame(self, frame: np.ndarray) -> dict[str, Any]:
-        return self.recognize_image(frame)
 
     def recognize_frame_continuous(
         self,
