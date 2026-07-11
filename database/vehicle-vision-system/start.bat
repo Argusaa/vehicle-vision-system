@@ -13,7 +13,7 @@ if defined PORT_PID (
   exit /b 0
 )
 
-"%PYTHON_EXE%" -c "import fastapi, uvicorn, sqlalchemy, cv2, qrcode" >nul 2>&1
+"%PYTHON_EXE%" -c "import fastapi, uvicorn, sqlalchemy, cv2, qrcode, ultralytics" >nul 2>&1
 if errorlevel 1 (
   echo Installing dependencies...
   "%PYTHON_EXE%" -m pip install -r requirements.txt
