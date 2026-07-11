@@ -89,7 +89,43 @@ def resolve_alert(alert_id: int, db: Session = Depends(get_db)):
     alert.status = "resolved"
     alert.resolved_at = datetime.utcnow()
     db.commit()
-    return {"message": "已处理", "id": alert_id}
+
+    write_log(
+        db, "alert",
+        f"告警 #{alert_id} 已处理: {alert.title}" + (f" ({note})" if note else ""),
+        level="INFO",
+        detail={"alert_id": alert_id, "note": note},
+    )
+    return {
+        "message": "已处理",
+        "id": alert_id,
+        "resolved_at": localize_utc(alert.resolved_at),
+        "resolution_note": alert.resolution_note,
+    }
+
+
+@router.post("/alerts/cleanup-noise", summary="清理历史噪声告警")
+def cleanup_noise_alerts(db: Session = Depends(get_db)):
+    """将测试告警、可选配置缺失、重复手势低置信度等历史噪声标记为已处理。"""
+    noise_types = ("config_missing", "test_event")
+    rows = (
+        db.query(AlertEvent)
+        .filter(AlertEvent.status == "open", AlertEvent.event_type.in_(noise_types))
+        .all()
+    )
+    now = datetime.utcnow()
+    for alert in rows:
+        alert.status = "resolved"
+        alert.resolved_at = now
+        if not alert.resolution_note:
+            alert.resolution_note = "系统自动清理：测试/可选配置类历史告警，非真实故障"
+    db.commit()
+    gesture_resolved = alert_agent.consolidate_duplicate_open_alerts(db)
+    return {
+        "resolved": len(rows) + gesture_resolved,
+        "types": list(noise_types),
+        "gesture_duplicates_resolved": gesture_resolved,
+    }
 
 
 @router.post("/alerts/test", summary="触发测试告警")

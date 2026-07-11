@@ -42,8 +42,22 @@ class Settings(BaseSettings):
     low_confidence_threshold: float = 0.4
     lpr_min_confidence: float = 0.5
 
+    # ── 告警智能体增强配置 ──
+    alert_window_seconds: int = 300            # 滑动窗口（秒），用于计算失败率
+    alert_cooldown_seconds: int = 60           # 同类型告警冷却时间（秒），避免重复告警
+    alert_gesture_cooldown_seconds: int = 1800  # 手势低置信度告警冷却（秒），默认 30 分钟
+    alert_config_cooldown_seconds: int = 3600  # 配置类告警冷却（启动/可选配置，避免刷屏）
+    alert_token_warning_threshold: int = 80000 # Token 用量警告阈值
+    alert_token_critical_threshold: int = 95000# Token 用量严重阈值
+    alert_token_limit: int = 100000            # Token 配额上限
+    alert_anomaly_rate_threshold: float = 0.3  # 异常比例阈值（如失败率 > 30%）
+    alert_sse_enabled: bool = True             # 是否启用 SSE 推送
+    alert_webhook_enabled: bool = False        # 是否启用 Webhook 推送（暂时关闭）
+    alert_email_enabled: bool = False          # 是否启用邮件推送（暂时关闭）
+
     class Config:
-        env_file = ".env"
+        env_file = str(BASE_DIR / ".env")
+        env_file_encoding = "utf-8"
         extra = "ignore"
 
     @property
