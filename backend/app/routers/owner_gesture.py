@@ -8,8 +8,8 @@ from app.models.records import OwnerGestureRecord, VehicleState
 from app.schemas import GestureResponse, VehicleStateResponse
 from app.services.owner_gesture_service import owner_gesture_service, OWNER_GESTURES
 from app.services.alert_agent import alert_agent
-from app.utils.auth import current_user_optional
-from app.utils.logger import write_log, log_exception, get_logger, localize_utc
+from app.utils.auth import get_current_user
+from app.utils.logger import write_log
 from app.config import settings
 
 router = APIRouter(prefix="/api/owner-gesture", tags=["车主手势控车"])
@@ -29,7 +29,7 @@ def _get_or_create_state(db: Session, user_id: int | None) -> VehicleState:
 async def recognize(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
-    user=Depends(current_user_optional),
+    user=Depends(get_current_user),
 ):
     content = await file.read()
     try:

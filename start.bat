@@ -1,6 +1,6 @@
 @echo off
 cd /d "%~dp0"
-set "PYTHON_EXE=%USERPROFILE%\anaconda3\envs\ctpgr\python.exe"
+set "PYTHON_EXE=%USERPROFILE%\anaconda3\envs\sqlquery311\python.exe"
 if not exist "%PYTHON_EXE%" set "PYTHON_EXE=%LocalAppData%\Programs\Python\Python313\python.exe"
 if not exist "%PYTHON_EXE%" set "PYTHON_EXE=python"
 
