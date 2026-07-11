@@ -187,16 +187,16 @@
         <!-- 交警手势 -->
         <section id="view-police" class="view">
           <h2>交警手势识别</h2>
-          <p class="section-desc">支持图片上传、摄像头实时识别、RTSP 视频流与本地视频播放识别</p>
+          <p class="section-desc">支持摄像头实时识别、RTSP 视频流与本地视频播放识别；点击识别画面可放大查看</p>
           <div class="lpr-layout police-layout">
             <div class="panel lpr-input-panel police-input-panel">
               <h3>输入源</h3>
               <div class="upload-area police-upload-area" onclick="document.getElementById('police-file').click()">
               <input type="file" id="police-file" accept="video/*,.mp4,.webm,.mov,.mkv,.avi,.m4v" hidden>
                 <div class="upload-icon">👮</div>
-                <p class="upload-title">拖拽图片或视频到此处</p>
-                <p class="upload-hint">支持 JPG / PNG / MP4，也可点击下方按钮选择</p>
-                <p class="upload-hint">图片直接识别，视频播放时按帧实时识别并同步标注</p>
+                <p class="upload-title">拖拽视频到此处</p>
+                <p class="upload-hint">支持 MP4 / WebM / MOV / MKV / AVI，也可点击下方按钮选择</p>
+                <p class="upload-hint">视频播放时按帧实时识别并同步标注</p>
                 <button class="btn" type="button">选择文件</button>
               </div>
               <div class="lpr-actions">
@@ -219,7 +219,7 @@
               <video id="police-video" autoplay playsinline muted hidden></video>
               <video id="police-upload-preview" class="preview-img" controls hidden></video>
               <canvas id="police-canvas" hidden></canvas>
-              <img id="police-stream-preview" class="stream-preview-img" alt="stream preview" hidden>
+              <img id="police-stream-preview" class="stream-preview-img police-zoomable" alt="交警手势识别画面" title="点击放大" hidden>
               </div>
               <div id="police-upload-controls" class="video-control-row" hidden>
                 <button id="police-upload-play" class="btn primary" onclick="App.toggleUploadedPolicePlayback()">播放视频</button>
@@ -229,7 +229,7 @@
             <div class="panel lpr-result-panel police-result-panel">
               <h3>识别结果</h3>
               <div class="lpr-preview-wrap police-preview-wrap">
-              <img id="police-preview" class="preview-img" alt="手势预览" hidden>
+              <img id="police-preview" class="preview-img police-zoomable" alt="交警手势识别画面" title="点击放大" hidden>
               </div>
               <div class="result-group">
                 <div class="result-group-head">
@@ -318,6 +318,12 @@
           <div id="log-table" class="log-table"></div>
         </section>
       </main>
+    </div>
+
+    <div id="police-image-viewer" class="image-viewer" hidden role="dialog" aria-modal="true" aria-label="交警手势识别画面">
+      <button class="image-viewer-close" type="button" aria-label="关闭" onclick="App.closePoliceImageViewer()">×</button>
+      <img id="police-image-viewer-img" alt="放大的交警手势识别画面">
+      <div class="image-viewer-hint">点击空白区域或按 Esc 关闭</div>
     </div>
 
     <!-- 告警 Toast -->

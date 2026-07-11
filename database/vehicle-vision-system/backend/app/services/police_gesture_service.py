@@ -14,6 +14,7 @@ import torch
 from app.config import settings
 from app.services.ctpgr_pose_adapter import coco_to_ctpgr
 from app.utils.helpers import ndarray_to_base64
+from app.utils.image_draw import draw_cn_text_bgr
 
 
 POLICE_GESTURES = {
@@ -219,7 +220,7 @@ class PoliceGestureService:
         annotated = ctpgr_image.copy()
         self._draw_skeleton(annotated, keypoints)
         en, cn = POLICE_GESTURES.get(gesture_id, POLICE_GESTURES[0])
-        cv2.putText(annotated, f"{en} ({confidence:.0%})", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2)
+        annotated = draw_cn_text_bgr(annotated, f"{cn}（{confidence:.0%}）", (20, 48), (0, 0, 255), 30)
         return {
             "gesture": en,
             "gesture_cn": cn,
@@ -245,7 +246,7 @@ class PoliceGestureService:
             keypoints = self._extract_keypoints(coord_norm)
             self._draw_skeleton(annotated, keypoints)
         en, cn = POLICE_GESTURES.get(gesture_id, POLICE_GESTURES[0])
-        cv2.putText(annotated, f"{en} ({confidence:.0%})", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2)
+        annotated = draw_cn_text_bgr(annotated, f"{cn}（{confidence:.0%}）", (20, 48), (0, 0, 255), 30)
         payload = {
             "gesture": en,
             "gesture_cn": cn,

@@ -19,6 +19,7 @@ const App = {
     this.bindNav();
     this.bindFileInputs();
     this.bindLprDragDrop();
+    this.bindPoliceImageViewer();
     if (this.token) this.showMain();
     else document.getElementById('login-page').classList.add('active');
   },
@@ -212,6 +213,39 @@ const App = {
       localStorage.setItem('token', this.token);
       this.showMain();
     } catch (e) { alert(e.message); }
+  },
+
+  bindPoliceImageViewer() {
+    ['police-stream-preview', 'police-preview'].forEach(id => {
+      document.getElementById(id)?.addEventListener('click', event => {
+        const src = event.currentTarget?.src;
+        if (src) this.openPoliceImageViewer(src);
+      });
+    });
+    document.getElementById('police-image-viewer')?.addEventListener('click', event => {
+      if (event.target === event.currentTarget) this.closePoliceImageViewer();
+    });
+    document.addEventListener('keydown', event => {
+      if (event.key === 'Escape') this.closePoliceImageViewer();
+    });
+  },
+
+  openPoliceImageViewer(src) {
+    const viewer = document.getElementById('police-image-viewer');
+    const image = document.getElementById('police-image-viewer-img');
+    if (!viewer || !image || !src) return;
+    image.src = src;
+    viewer.hidden = false;
+    document.body.style.overflow = 'hidden';
+  },
+
+  closePoliceImageViewer() {
+    const viewer = document.getElementById('police-image-viewer');
+    const image = document.getElementById('police-image-viewer-img');
+    if (!viewer || viewer.hidden) return;
+    viewer.hidden = true;
+    if (image) image.removeAttribute('src');
+    document.body.style.overflow = '';
   },
 
   async sendCode() {
