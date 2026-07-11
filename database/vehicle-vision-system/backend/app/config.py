@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     police_pose_backend: str = "yolo"
     police_yolo_pose_model: str = "yolo11s-pose.pt"
     police_gesture_model: str = "lstm_yolo11s.pt"
+    police_pose_hold_frames: int = 5
 
     class Config:
         env_file = str(BASE_DIR / ".env")

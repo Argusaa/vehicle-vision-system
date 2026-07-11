@@ -161,11 +161,40 @@ class PoliceGestureService:
             return float(probs[gesture_id])
         return 0.0
 
-    def create_sequence_state(self) -> dict[str, torch.Tensor]:
+    def create_sequence_state(self) -> dict[str, Any]:
         return {
             "h": torch.zeros_like(self.g_model.h0()),
             "c": torch.zeros_like(self.g_model.c0()),
+            "last_coord": None,
+            "last_box": None,
+            "missed_pose_frames": 0,
         }
+
+    @staticmethod
+    def _select_person_index(boxes: np.ndarray, previous_box: np.ndarray | None = None) -> int:
+        """Keep the same person across frames, falling back to the largest box."""
+        boxes = np.asarray(boxes, dtype=np.float32)
+        if boxes.ndim != 2 or boxes.shape[1] != 4 or len(boxes) == 0:
+            raise ValueError("expected one or more person boxes shaped (N, 4)")
+
+        areas = np.maximum(0, boxes[:, 2] - boxes[:, 0]) * np.maximum(0, boxes[:, 3] - boxes[:, 1])
+        if previous_box is None:
+            return int(np.argmax(areas))
+
+        previous_box = np.asarray(previous_box, dtype=np.float32)
+        intersection_left_top = np.maximum(boxes[:, :2], previous_box[:2])
+        intersection_right_bottom = np.minimum(boxes[:, 2:], previous_box[2:])
+        intersection_size = np.maximum(0, intersection_right_bottom - intersection_left_top)
+        intersection = intersection_size[:, 0] * intersection_size[:, 1]
+        previous_area = max(0.0, float(previous_box[2] - previous_box[0])) * max(
+            0.0, float(previous_box[3] - previous_box[1])
+        )
+        union = areas + previous_area - intersection
+        iou = np.divide(intersection, union, out=np.zeros_like(intersection), where=union > 0)
+        best_match = int(np.argmax(iou))
+        if iou[best_match] >= 0.05:
+            return best_match
+        return int(np.argmax(areas))
 
     def _extract_keypoints(self, coord_norm: np.ndarray) -> list[dict]:
         if coord_norm.ndim == 3:
@@ -192,25 +221,46 @@ class PoliceGestureService:
         for point in points.values():
             cv2.circle(image, point, 4, (0, 200, 255), -1)
 
-    def _coord_from_yolo_pose(self, ctpgr_image: np.ndarray) -> np.ndarray:
+    def _coord_from_yolo_pose(
+        self,
+        ctpgr_image: np.ndarray,
+        state: dict[str, Any] | None = None,
+    ) -> np.ndarray:
         with self._model_lock:
             results = self.yolo_model.predict(ctpgr_image, verbose=False, imgsz=self.input_size[0], device="cpu")
         if not results or results[0].keypoints is None or results[0].keypoints.xy is None:
-            raise ValueError("YOLO pose did not detect a person")
+            return self._reuse_recent_pose(state)
 
         keypoints_xy = results[0].keypoints.xy.cpu().numpy()
         if keypoints_xy.size == 0:
-            raise ValueError("YOLO pose did not return keypoints")
+            return self._reuse_recent_pose(state)
 
         person_index = 0
         boxes = getattr(results[0], "boxes", None)
         if boxes is not None and boxes.xyxy is not None and len(boxes.xyxy):
             xyxy = boxes.xyxy.cpu().numpy()
-            areas = np.maximum(0, xyxy[:, 2] - xyxy[:, 0]) * np.maximum(0, xyxy[:, 3] - xyxy[:, 1])
-            person_index = int(np.argmax(areas))
+            previous_box = state.get("last_box") if state is not None else None
+            person_index = self._select_person_index(xyxy, previous_box)
+            if state is not None:
+                state["last_box"] = xyxy[person_index].copy()
 
         coco = keypoints_xy[person_index]
-        return coco_to_ctpgr(coco, self.input_size)
+        coord_norm = coco_to_ctpgr(coco, self.input_size)
+        if state is not None:
+            state["last_coord"] = coord_norm.copy()
+            state["missed_pose_frames"] = 0
+        return coord_norm
+
+    @staticmethod
+    def _reuse_recent_pose(state: dict[str, Any] | None) -> np.ndarray:
+        hold_frames = max(0, int(settings.police_pose_hold_frames))
+        if state is not None and state.get("last_coord") is not None:
+            missed = int(state.get("missed_pose_frames", 0))
+            if missed < hold_frames:
+                state["missed_pose_frames"] = missed + 1
+                return np.asarray(state["last_coord"], dtype=np.float32).copy()
+            state["last_box"] = None
+        raise ValueError("YOLO pose did not detect a person")
 
     def _result_payload(self, ctpgr_image: np.ndarray, result) -> dict[str, Any]:
         gesture_id = int(result[self.pg.OUT_ARGMAX])
@@ -264,14 +314,18 @@ class PoliceGestureService:
     def _no_gesture_payload(self, ctpgr_image: np.ndarray, reason: str | None = None) -> dict[str, Any]:
         return self._plain_payload(ctpgr_image, 0, 1.0, None, reason)
 
-    def _coord_from_prepared_image(self, ctpgr_image: np.ndarray) -> np.ndarray:
+    def _coord_from_prepared_image(
+        self,
+        ctpgr_image: np.ndarray,
+        state: dict[str, Any] | None = None,
+    ) -> np.ndarray:
         if self.pose_backend == "yolo":
-            return self._coord_from_yolo_pose(ctpgr_image)
+            return self._coord_from_yolo_pose(ctpgr_image, state)
         with self._model_lock:
             pose = self.predictor.p_predictor.get_coordinates(ctpgr_image)
         return pose[self.pg.COORD_NORM][np.newaxis]
 
-    def _classify_coord(self, coord_norm: np.ndarray, state: dict[str, torch.Tensor] | None = None):
+    def _classify_coord(self, coord_norm: np.ndarray, state: dict[str, Any] | None = None):
         features_dict = self.bla.handcrafted_features(coord_norm)
         features = np.concatenate(
             (
@@ -294,10 +348,10 @@ class PoliceGestureService:
     def recognize_prepared_frame_continuous(
         self,
         ctpgr_image: np.ndarray,
-        state: dict[str, torch.Tensor] | None = None,
+        state: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         try:
-            coord_norm = self._coord_from_prepared_image(ctpgr_image)
+            coord_norm = self._coord_from_prepared_image(ctpgr_image, state)
         except ValueError as exc:
             return self._no_gesture_payload(ctpgr_image, str(exc))
         result = self._classify_coord(coord_norm, state)
@@ -306,7 +360,7 @@ class PoliceGestureService:
     def recognize_frame_continuous(
         self,
         frame: np.ndarray,
-        state: dict[str, torch.Tensor] | None = None,
+        state: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         ctpgr_image = cv2.resize(frame, self.input_size, interpolation=cv2.INTER_AREA)
         return self.recognize_prepared_frame_continuous(ctpgr_image, state)
