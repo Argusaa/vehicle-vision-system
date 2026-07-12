@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -11,6 +12,9 @@ from app.models.records import OwnerGestureRecord  # noqa: F401
 from app.models.user import User  # noqa: F401
 from app.routers.monitor import router as monitor_router
 from app.services.alert_agent import EVENT_TYPES, alert_agent
+
+
+BACKEND_DIR = Path(__file__).resolve().parents[1]
 
 
 def _memory_session():
@@ -71,3 +75,26 @@ def test_required_anomaly_types_are_available():
         "model_load_failure",
     }
     assert required <= EVENT_TYPES.keys()
+
+
+def test_recognition_routes_use_unified_monitoring_without_replacing_workflows():
+    router_dir = BACKEND_DIR / "app" / "routers"
+    expected = {
+        "lpr.py": "record_lpr_recognition",
+        "police_gesture.py": "record_police_recognition",
+        "owner_gesture.py": "record_owner_recognition",
+        "websocket.py": "_stream_state_signature",
+    }
+    for filename, marker in expected.items():
+        assert marker in (router_dir / filename).read_text(encoding="utf-8")
+
+
+def test_monitoring_frontend_exposes_structured_alerts_and_chinese_logs():
+    html = (BACKEND_DIR / "static" / "index.html").read_text(encoding="utf-8")
+    js = (BACKEND_DIR / "static" / "js" / "app.js").read_text(encoding="utf-8")
+    assert 'id="assistant-context"' in html
+    assert 'id="monitor-diagnostics"' in html
+    assert '<option value="警告">警告</option>' in html
+    assert "severity_assessment" in js
+    assert "focusedAlertId" in js
+    assert "display_message || l.message" in js

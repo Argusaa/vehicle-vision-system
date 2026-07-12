@@ -20,6 +20,8 @@ const App = {
   ownerLastGestureHtml: '',
   ownerStandbyDismissed: false,
   ownerStandbyLockedUntil: 0,
+  focusedAlertId: null,
+  focusedAlertTitle: '',
 
   init() {
     this.bindTabs();
@@ -184,7 +186,7 @@ const App = {
     if (view === 'lpr') { this.loadLprHistory(); this.loadLprModelStatus(); }
     if (view === 'police') { this.loadPolicePoseBackend(); this.loadPoliceGestures(); this.loadPoliceHistory(); this.ensureCameraSelector('police'); }
     if (view === 'owner') { this.loadOwnerGestures(); this.loadVehicleState(); this.refreshCameraDevices('owner'); }
-    if (view === 'alerts') { this.loadAlertTypes(); this.loadAlerts(); this.loadAgentBriefing(); this.connectAlertSse(); }
+    if (view === 'alerts') { this.loadAlertTypes(); this.loadAlerts(); this.loadAgentBriefing(); this.loadMonitorDiagnostics(); this.connectAlertSse(); }
     if (view === 'logs') { this.loadLogs(); this.loadLogStats(); }
   },
 
@@ -220,6 +222,20 @@ const App = {
       localStorage.setItem('token', this.token);
       this.showMain();
     } catch (e) { alert(e.message); }
+  },
+
+  escHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, ch => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    })[ch]);
+  },
+
+  monitorLevelLabel(level) {
+    return ({ info: '提示', warning: '警告', critical: '严重', INFO: '信息', WARN: '警告', WARNING: '警告', ERROR: '错误', CRITICAL: '严重' })[level] || level || '信息';
+  },
+
+  monitorCategoryLabel(category) {
+    return ({ lpr: '车牌识别', police_gesture: '交警手势', owner_gesture: '车主手势', alert: '告警', user: '用户操作', system: '系统运行', agent: '智能体决策' })[category] || category || '系统运行';
   },
 
   bindPoliceImageViewer() {
@@ -1824,9 +1840,13 @@ const App = {
       const level = document.getElementById('alert-filter-level')?.value;
       const status = document.getElementById('alert-filter-status')?.value;
       const eventType = document.getElementById('alert-filter-type')?.value;
+      const start = document.getElementById('alert-filter-start')?.value;
+      const end = document.getElementById('alert-filter-end')?.value;
       if (level) params.set('level', level);
       if (status) params.set('status', status);
       if (eventType) params.set('event_type', eventType);
+      if (start) params.set('start_time', `${start}T00:00:00`);
+      if (end) params.set('end_time', `${end}T23:59:59`);
       const [stats, alerts, analytics] = await Promise.all([
         this.api('/api/monitor/alerts/stats'),
         this.api('/api/monitor/alerts?' + params.toString()),
@@ -1836,10 +1856,31 @@ const App = {
         ['总数', stats.total || 0], ['今日', stats.today_count || 0], ['未处理', stats.open || 0], ['处理率', `${Math.round(stats.resolution_rate || 0)}%`],
       ].map(([label, value]) => `<div class="stat-card"><div class="stat-num">${value}</div><div class="stat-label">${label}</div></div>`).join('');
       document.getElementById('alert-analytics').innerHTML = `<p>近 7 天告警：${analytics.total || 0}</p><p>平均处理时间：${analytics.mttr_minutes ?? '--'} 分钟</p><p>主要类型：${(analytics.by_type_ranked || []).slice(0, 3).map(x => `${x.name || x.event_type} ${x.count}`).join('、') || '暂无'}</p>`;
-      document.getElementById('alert-timeline').innerHTML = alerts.map(a =>
-        `<div class="timeline-item ${a.level}" onclick="App.viewAlertReplay(${a.id})"><strong>${a.title}</strong><br>${a.summary}<br><small>${new Date(a.created_at).toLocaleString()} · ${a.status === 'resolved' ? '已处理' : '未处理'}</small>${a.suggestion ? '<br><em>建议: ' + a.suggestion + '</em>' : ''}${a.status !== 'resolved' ? `<br><button class="btn" onclick="event.stopPropagation();App.resolveAlert(${a.id})">标记已处理</button>` : ''}</div>`
-      ).join('') || '<p>暂无告警</p>';
-    } catch (e) {}
+      document.getElementById('alert-timeline').innerHTML = alerts.map(a => {
+        const severity = a.severity_assessment || a.detail?.structured?.severity_assessment || {};
+        const impact = a.impact_scope || a.detail?.structured?.impact_scope || '暂未发现明确影响范围';
+        const occurred = a.occurred_at || a.detail?.structured?.occurred_at || new Date(a.created_at).toLocaleString();
+        return `<article class="timeline-item ${this.escHtml(a.level)}">
+          <div class="alert-title-row"><strong>${this.escHtml(a.title)}</strong><span class="monitor-pill ${this.escHtml(a.level)}">${this.escHtml(a.level_cn || this.monitorLevelLabel(a.level))}</span></div>
+          <p>${this.escHtml(a.summary)}</p>
+          <div class="alert-structured-grid">
+            <div><b>发生时间</b><span>${this.escHtml(occurred)}</span></div>
+            <div><b>影响范围</b><span>${this.escHtml(impact)}</span></div>
+            <div><b>可能根因</b><span>${this.escHtml(a.root_cause || '等待进一步分析')}</span></div>
+            <div><b>严重度依据</b><span>${this.escHtml(severity.summary_text || severity.decision_reason || '按规则引擎判定')}</span></div>
+          </div>
+          ${a.suggestion ? `<p class="alert-suggestion"><b>处置建议：</b>${this.escHtml(a.suggestion)}</p>` : ''}
+          <small>${this.escHtml(a.status_cn || (a.status === 'resolved' ? '已处理' : '未处理'))} · ${this.escHtml(a.event_type_cn || a.event_type)}</small>
+          <div class="alert-actions">
+            <button class="btn" onclick="App.viewAlertReplay(${a.id})">事件回放</button>
+            <button class="btn" onclick="App.focusAlert(${a.id}, '${this.escHtml(a.title).replace(/'/g, '&#39;')}')">围绕此告警提问</button>
+            ${a.status !== 'resolved' ? `<button class="btn" onclick="App.resolveAlert(${a.id})">标记已处理</button>` : ''}
+          </div>
+        </article>`;
+      }).join('') || '<p>暂无告警</p>';
+    } catch (e) {
+      document.getElementById('alert-timeline').innerHTML = `<p>加载告警失败：${this.escHtml(e.message)}</p>`;
+    }
   },
 
   async loadAlertTypes() {
@@ -1849,6 +1890,8 @@ const App = {
       const current = select?.value || '';
       if (select) select.innerHTML = '<option value="">全部事件</option>' + types.map(t => `<option value="${t.key}">${t.name}</option>`).join('');
       if (select) select.value = current;
+      const testSelect = document.getElementById('test-alert-type');
+      if (testSelect) testSelect.innerHTML = '<option value="">通用测试告警</option>' + types.map(t => `<option value="${t.key}">${t.name}</option>`).join('');
     } catch (e) {}
   },
 
@@ -1871,9 +1914,29 @@ const App = {
     try {
       const data = await this.api(`/api/monitor/alerts/${id}/replay`);
       const box = document.getElementById('alert-replay');
+      const cause = data.cause_analysis || {};
+      const events = data.timeline_events || [];
       box.classList.remove('hidden');
-      box.innerHTML = `<h3>告警回放 #${id}</h3><p>${data.cause_analysis?.primary_cause || ''}</p><pre>${JSON.stringify(data.timeline_events || data, null, 2)}</pre><button class="btn" onclick="this.parentElement.classList.add('hidden')">关闭</button>`;
+      box.innerHTML = `<h3>告警回放 #${id}</h3>
+        <div class="replay-summary"><p><b>主要原因：</b>${this.escHtml(cause.primary_cause || '等待进一步分析')}</p><p><b>影响：</b>${this.escHtml(cause.impact_scope || cause.impact || '暂无明确影响')}</p></div>
+        <div class="replay-events">${events.map((event, index) => `<div class="replay-event"><b>${index + 1}. ${this.escHtml(event.title || event.type)}</b><span>${this.escHtml(event.time || '')}</span>${event.description ? `<p>${this.escHtml(event.description)}</p>` : ''}</div>`).join('') || '<p>暂无关联事件</p>'}</div>
+        <button class="btn" onclick="this.parentElement.classList.add('hidden')">关闭</button>`;
+      box.scrollIntoView({ behavior: 'smooth', block: 'start' });
     } catch (e) { alert(e.message); }
+  },
+
+  focusAlert(id, title) {
+    this.focusedAlertId = id;
+    this.focusedAlertTitle = title || `告警 #${id}`;
+    const context = document.getElementById('assistant-context');
+    if (context) context.textContent = `当前讨论：${this.focusedAlertTitle}（#${id}）`;
+  },
+
+  clearFocusedAlert() {
+    this.focusedAlertId = null;
+    this.focusedAlertTitle = '';
+    const context = document.getElementById('assistant-context');
+    if (context) context.textContent = '尚未选定具体告警；点击时间线中的“围绕此告警提问”。';
   },
 
   async loadAgentBriefing() {
@@ -1883,22 +1946,50 @@ const App = {
     } catch (e) {}
   },
 
-  async askMonitorAssistant() {
+  async askMonitorAssistant(intent = null, presetQuestion = '') {
     const input = document.getElementById('assistant-question');
     const output = document.getElementById('assistant-answer');
-    if (!input?.value.trim()) return;
+    const question = presetQuestion || input?.value.trim();
+    if (!question) return;
+    if (presetQuestion && input) input.value = presetQuestion;
     output.textContent = '分析中…';
     try {
-      const data = await this.api('/api/monitor/assistant', { method: 'POST', body: JSON.stringify({ question: input.value.trim() }) });
+      const payload = { question };
+      if (intent) payload.intent = intent;
+      if (this.focusedAlertId) payload.alert_id = this.focusedAlertId;
+      const data = await this.api('/api/monitor/assistant', { method: 'POST', body: JSON.stringify(payload) });
       output.textContent = data.answer || JSON.stringify(data);
     } catch (e) { output.textContent = e.message; }
   },
 
   async testAlert() {
     try {
-      const data = await this.api('/api/monitor/alerts/test', { method: 'POST' });
+      const eventType = document.getElementById('test-alert-type')?.value;
+      const path = eventType ? `/api/monitor/alerts/test/${encodeURIComponent(eventType)}` : '/api/monitor/alerts/test';
+      const data = await this.api(path, { method: 'POST' });
       this.showToast({ level: data.level || 'info', title: data.title, summary: data.summary });
       this.loadAlerts();
+    } catch (e) { alert(e.message); }
+  },
+
+  async loadMonitorDiagnostics() {
+    const box = document.getElementById('monitor-diagnostics');
+    if (!box) return;
+    try {
+      const [connections, config, tokens] = await Promise.all([
+        this.api('/api/monitor/connections'), this.api('/api/monitor/config'), this.api('/api/monitor/token-usage'),
+      ]);
+      box.innerHTML = `<div><b>实时连接</b><span>WebSocket ${connections.websocket_clients || 0} · 告警 SSE ${connections.sse_clients || 0} · 日志 SSE ${connections.log_sse_clients || 0}</span></div>
+        <div><b>LLM</b><span>${this.escHtml(config.llm_provider_label || config.llm_provider || '模板模式')} · ${this.escHtml(config.llm_model || '')} · Token ${tokens.used || 0}/${tokens.limit || 0}</span></div>
+        <div><b>通知渠道</b><span>Webhook ${config.webhook_enabled ? '已开启' : '已关闭'} · 邮件 ${config.email_enabled ? '已开启' : '已关闭'} · SSE ${config.sse_enabled === false ? '已关闭' : '已开启'}</span></div>`;
+    } catch (e) { box.textContent = `诊断信息加载失败：${e.message}`; }
+  },
+
+  async testMonitorNotification(channel) {
+    try {
+      const data = await this.api(`/api/monitor/notifications/test?channel=${encodeURIComponent(channel)}`, { method: 'POST' });
+      alert(data.message || `${channel} 测试完成`);
+      this.loadMonitorDiagnostics();
     } catch (e) { alert(e.message); }
   },
 
@@ -1918,17 +2009,27 @@ const App = {
     const cat = document.getElementById('log-category')?.value || '';
     const level = document.getElementById('log-level')?.value || '';
     const search = document.getElementById('log-search')?.value.trim() || '';
+    const userId = document.getElementById('log-user')?.value || '';
+    const start = document.getElementById('log-start')?.value || '';
+    const end = document.getElementById('log-end')?.value || '';
     try {
       const params = new URLSearchParams({ limit: '100' });
       if (cat) params.set('category', cat);
       if (level) params.set('level', level);
       if (search) params.set('search', search);
+      if (userId) params.set('user_id', userId);
+      if (start) params.set('start', start);
+      if (end) params.set('end', end);
       const data = await this.api('/api/monitor/logs?' + params.toString());
       document.getElementById('log-table').innerHTML =
         '<div class="log-row header"><span>时间</span><span>级别</span><span>类别</span><span>消息</span></div>' +
-        data.map(l =>
-          `<div class="log-row"><span>${new Date(l.created_at).toLocaleString()}</span><span class="level-${l.level}">${l.level}</span><span>${l.category}</span><span>${l.message}</span></div>`
-        ).join('') || '<p>暂无日志</p>';
+        (data.map(l => {
+          const label = l.level_cn || this.monitorLevelLabel(l.level);
+          const category = l.category_cn || this.monitorCategoryLabel(l.category);
+          const message = l.display_message || l.message;
+          const detail = l.detail_json && typeof l.detail_json === 'object' ? JSON.stringify(l.detail_json, null, 2) : '';
+          return `<details class="log-entry"><summary class="log-row severity-${this.escHtml(l.level)}"><span>${new Date(l.created_at).toLocaleString()}</span><span class="monitor-pill">${this.escHtml(label)}</span><span>${this.escHtml(category)}</span><span>${this.escHtml(message)}</span></summary>${detail ? `<pre class="log-detail">${this.escHtml(detail)}</pre>` : ''}</details>`;
+        }).join('') || '<p>暂无日志</p>');
     } catch (e) {
       document.getElementById('log-table').innerHTML = `<p>加载日志失败: ${e.message}</p>`;
     }
@@ -1936,8 +2037,9 @@ const App = {
 
   async loadLogStats() {
     try {
-      const data = await this.api('/api/monitor/logs/stats?hours=24');
-      const rows = [['24h 总数', data.total || 0], ...Object.entries(data.by_level || {})];
+      const hours = document.getElementById('log-stats-hours')?.value || '24';
+      const data = await this.api(`/api/monitor/logs/stats?hours=${hours}`);
+      const rows = [[`${hours}h 总数`, data.total || 0], ...Object.entries(data.by_level || {})];
       document.getElementById('log-stats').innerHTML = rows.map(([label, value]) => `<div class="stat-card"><div class="stat-num">${value}</div><div class="stat-label">${label}</div></div>`).join('');
     } catch (e) {}
   },
@@ -1948,11 +2050,14 @@ const App = {
       this.logSse.close();
       this.logSse = null;
       if (button) button.textContent = '开启实时日志';
+      const status = document.getElementById('log-stream-status');
+      if (status) status.textContent = '未连接';
       return;
     }
     this.logSse = new EventSource('/api/monitor/logs/stream');
+    this.logSse.onopen = () => { const status = document.getElementById('log-stream-status'); if (status) status.textContent = '已连接'; };
     this.logSse.onmessage = () => { this.loadLogs(); this.loadLogStats(); };
-    this.logSse.onerror = () => { this.logSse?.close(); this.logSse = null; if (button) button.textContent = '开启实时日志'; };
+    this.logSse.onerror = () => { this.logSse?.close(); this.logSse = null; if (button) button.textContent = '开启实时日志'; const status = document.getElementById('log-stream-status'); if (status) status.textContent = '连接中断'; };
     if (button) button.textContent = '停止实时日志';
   },
 };

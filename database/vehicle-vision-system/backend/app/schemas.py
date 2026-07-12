@@ -78,15 +78,20 @@ class VehicleStateResponse(BaseModel):
 class AlertResponse(BaseModel):
     id: int
     level: str
+    level_cn: Optional[str] = None
     event_type: str
     title: str
     summary: str
     root_cause: Optional[str]
     suggestion: Optional[str]
+    impact_scope: Optional[str] = None
+    occurred_at: Optional[str] = None
+    severity_assessment: Optional[dict] = None
     channels: Optional[str] = None
     detail: Optional[dict] = None
     system_health: Optional[dict] = None
     status: str
+    status_cn: Optional[str] = None
     resolution_note: Optional[str] = None
     resolved_at: Optional[datetime] = None
     created_at: datetime
@@ -94,12 +99,14 @@ class AlertResponse(BaseModel):
     class Config:
         from_attributes = True
 
-
 class LogResponse(BaseModel):
     id: int
     category: str
+    category_cn: Optional[str] = None
     level: str
+    level_cn: Optional[str] = None
     message: str
+    display_message: Optional[str] = None
     detail_json: dict | None = None
     user_id: int | None = None
     created_at: datetime

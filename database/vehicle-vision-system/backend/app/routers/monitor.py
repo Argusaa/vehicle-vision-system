@@ -16,8 +16,9 @@ from app.models.logs import SystemLog
 from app.schemas import AlertResponse, LogResponse
 from app.services.alert_agent import alert_agent, EVENT_TYPES, DEFAULT_LEVELS
 from app.services.llm_service import llm_service
-from app.services.log_stream import register as register_log_sse, unregister as unregister_log_sse
-from app.utils.logger import write_log, get_logger, localize_utc
+from app.services.log_stream import register as register_log_sse, unregister as unregister_log_sse, client_count as log_stream_client_count
+from app.utils.logger import write_log, get_logger, localize_utc, level_to_cn, level_filter_variants
+from app.utils.log_display import format_log_entry, category_cn, sanitize_log_message
 from app.utils.user_language import (
     briefing_for_user,
     alert_for_user,
@@ -38,6 +39,7 @@ class AssistantQuery(BaseModel):
     path: str | None = None
     ip: str | None = None
     alert_id: int | None = None
+    intent: str | None = None
 
 
 class MarkResolvedRequest(BaseModel):
@@ -72,13 +74,15 @@ def get_logs(
     """查询系统日志，支持多维度过滤。
 
     支持按类别（lpr/police_gesture/owner_gesture/alert/user/system/agent）、
-    级别（INFO/WARN/ERROR/CRITICAL）、用户ID、关键词和时间范围进行过滤。
+    级别（信息/警告/错误/严重）、用户ID、关键词和时间范围进行过滤。
     """
     q = db.query(SystemLog).order_by(SystemLog.created_at.desc())
     if category:
         q = q.filter(SystemLog.category == category)
     if level:
-        q = q.filter(SystemLog.level == level.upper())
+        variants = level_filter_variants(level)
+        if variants:
+            q = q.filter(SystemLog.level.in_(variants))
     if user_id is not None:
         q = q.filter(SystemLog.user_id == user_id)
     if search:
@@ -99,15 +103,15 @@ def get_logs(
                 detail = json.loads(r.detail_json)
             except Exception:
                 detail = r.detail_json
-        out.append({
-            "id": r.id,
-            "category": r.category,
-            "level": r.level,
-            "message": r.message,
-            "detail_json": detail,
-            "user_id": r.user_id,
-            "created_at": localize_utc(r.created_at),
-        })
+        out.append(format_log_entry(
+            category=r.category,
+            level=r.level,
+            message=r.message,
+            detail=detail,
+            id=r.id,
+            user_id=r.user_id,
+            created_at=localize_utc(r.created_at),
+        ))
     return out
 
 
@@ -123,7 +127,13 @@ def log_categories():
             {"key": "user", "name": "用户操作日志"},
             {"key": "system", "name": "系统运行日志"},
             {"key": "agent", "name": "智能体决策日志"},
-        ]
+        ],
+        "levels": [
+            {"key": "信息", "name": "信息"},
+            {"key": "警告", "name": "警告"},
+            {"key": "错误", "name": "错误"},
+            {"key": "严重", "name": "严重"},
+        ],
     }
 
 
@@ -142,7 +152,8 @@ def log_stats(
     by_level: dict[str, int] = {}
     for r in rows:
         by_category[r.category] = by_category.get(r.category, 0) + 1
-        by_level[r.level] = by_level.get(r.level, 0) + 1
+        level_key = level_to_cn(r.level)
+        by_level[level_key] = by_level.get(level_key, 0) + 1
 
     # 按小时统计趋势
     by_hour: dict[str, int] = {}
@@ -501,6 +512,7 @@ def connection_status():
     return {
         "websocket_clients": len(alert_agent._ws_clients),
         "sse_clients": len(alert_agent._sse_queues),
+        "log_sse_clients": log_stream_client_count(),
     }
 
 
@@ -536,7 +548,14 @@ def agent_briefing(db: Session = Depends(get_db)):
     if open_count > 0:
         issues.append(f"有 {open_count} 条未处理告警")
 
-    warn_logs = by_level.get("WARN", 0) + by_level.get("ERROR", 0) + by_level.get("CRITICAL", 0)
+    warn_logs = (
+        by_level.get("警告", 0)
+        + by_level.get("错误", 0)
+        + by_level.get("严重", 0)
+        + by_level.get("WARN", 0)
+        + by_level.get("ERROR", 0)
+        + by_level.get("CRITICAL", 0)
+    )
 
     if not issues and warn_logs == 0:
         summary = (
@@ -647,12 +666,18 @@ async def assistant_chat(payload: AssistantQuery, db: Session = Depends(get_db))
         "today_alerts": stats.get("today_count", 0),
     }
 
-    intent = detect_assistant_intent(payload.question)
+    intent = payload.intent or detect_assistant_intent(payload.question)
     has_alert_context = bool(
         payload.alert_id
         and context.get("title")
         and context.get("event_type") not in (None, "unknown", "")
     )
+
+    if payload.alert_id and context.get("detail"):
+        structured = (context.get("detail") or {}).get("structured") or {}
+        context["severity_assessment"] = structured.get("severity_assessment")
+        context["impact_scope"] = structured.get("impact_scope")
+        context["occurred_at"] = structured.get("occurred_at")
 
     if needs_alert_context(payload.question, intent) and not has_alert_context:
         open_rows = (
@@ -670,7 +695,7 @@ async def assistant_chat(payload: AssistantQuery, db: Session = Depends(get_db))
             "intent": intent,
         }
 
-    answer = await llm_service.ask_assistant(payload.question, context)
+    answer = await llm_service.ask_assistant(payload.question, context, intent=intent)
     return {"answer": answer, "context": context, "needs_clarification": False, "intent": intent}
 
 

@@ -306,7 +306,10 @@
             <select id="alert-filter-level" onchange="App.loadAlerts()"><option value="">全部级别</option><option value="info">提示</option><option value="warning">警告</option><option value="critical">严重</option></select>
             <select id="alert-filter-status" onchange="App.loadAlerts()"><option value="">全部状态</option><option value="open">未处理</option><option value="resolved">已处理</option></select>
             <select id="alert-filter-type" onchange="App.loadAlerts()"><option value="">全部事件</option></select>
+            <input id="alert-filter-start" type="date" title="开始日期" onchange="App.loadAlerts()">
+            <input id="alert-filter-end" type="date" title="结束日期" onchange="App.loadAlerts()">
             <button class="btn" onclick="App.loadAlerts()">刷新</button>
+            <select id="test-alert-type" title="测试告警类型"><option value="">通用测试告警</option></select>
             <button class="btn" onclick="App.testAlert()">触发测试告警</button>
           </div>
           <div class="stats-grid" id="alert-stats"></div>
@@ -325,7 +328,24 @@
           <div class="panel">
             <h3>告警智能助手</h3>
             <div class="assistant-row"><input id="assistant-question" placeholder="例如：当前最紧急的告警是什么？"><button class="btn primary" onclick="App.askMonitorAssistant()">提问</button></div>
+            <div id="assistant-context" class="monitor-context">尚未选定具体告警；点击时间线中的“围绕此告警提问”。</div>
+            <div class="assistant-quick-actions">
+              <button class="btn" onclick="App.askMonitorAssistant('root_cause', '这个异常的根因是什么？')">根因</button>
+              <button class="btn" onclick="App.askMonitorAssistant('action', '应该怎么处理？')">建议</button>
+              <button class="btn" onclick="App.askMonitorAssistant('severity', '是否需要升级为严重告警？')">升级判断</button>
+              <button class="btn" onclick="App.askMonitorAssistant('impact', '当前告警影响有多大？')">影响范围</button>
+              <button class="btn" onclick="App.clearFocusedAlert()">取消选定</button>
+            </div>
             <div id="assistant-answer" class="assistant-answer"></div>
+          </div>
+          <div class="panel">
+            <h3>连接与通知诊断</h3>
+            <div id="monitor-diagnostics" class="monitor-diagnostics"></div>
+            <div class="toolbar">
+              <button class="btn" onclick="App.loadMonitorDiagnostics()">刷新状态</button>
+              <button class="btn" onclick="App.testMonitorNotification('webhook')">测试 Webhook</button>
+              <button class="btn" onclick="App.testMonitorNotification('email')">测试邮件</button>
+            </div>
           </div>
           <div id="alert-replay" class="panel hidden"></div>
         </section>
@@ -344,10 +364,15 @@
               <option value="system">系统运行</option>
               <option value="agent">智能体决策</option>
             </select>
-            <select id="log-level" onchange="App.loadLogs()"><option value="">全部级别</option><option value="INFO">INFO</option><option value="WARN">WARN</option><option value="ERROR">ERROR</option></select>
+            <select id="log-level" onchange="App.loadLogs()"><option value="">全部级别</option><option value="信息">信息</option><option value="警告">警告</option><option value="错误">错误</option><option value="严重">严重</option></select>
             <input id="log-search" placeholder="关键词" onkeydown="if(event.key==='Enter')App.loadLogs()">
+            <input id="log-user" type="number" min="1" placeholder="用户ID" onchange="App.loadLogs()">
+            <input id="log-start" type="datetime-local" title="开始时间" onchange="App.loadLogs()">
+            <input id="log-end" type="datetime-local" title="结束时间" onchange="App.loadLogs()">
+            <select id="log-stats-hours" onchange="App.loadLogStats()"><option value="24">近24小时</option><option value="72">近3天</option><option value="168">近7天</option></select>
             <button class="btn" onclick="App.loadLogs()">刷新</button>
             <button class="btn" id="log-stream-btn" onclick="App.toggleLogStream()">开启实时日志</button>
+            <span id="log-stream-status" class="conn-status">未连接</span>
           </div>
           <div id="log-stats" class="stats-grid"></div>
           <div id="log-table" class="log-table"></div>
@@ -370,6 +395,6 @@
     </div>
     <div id="toast-container"></div>
   </div>
-  <script src="/static/js/app.js"></script>
+  <script src="/static/js/app.js?v=20260712-monitor2"></script>
 </body>
 </html>

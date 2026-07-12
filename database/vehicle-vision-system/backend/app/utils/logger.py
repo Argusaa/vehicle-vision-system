@@ -17,6 +17,76 @@ from app.services.log_stream import broadcast_log
 
 _TZ_CN = timezone(timedelta(hours=8))
 
+# 日志级别：数据库存中文，代码入参仍兼容英文
+LEVEL_CN: dict[str, str] = {
+    "DEBUG": "调试",
+    "INFO": "信息",
+    "WARN": "警告",
+    "WARNING": "警告",
+    "ERROR": "错误",
+    "CRITICAL": "严重",
+}
+ALERT_LEVEL_CN: dict[str, str] = {
+    "info": "提示",
+    "warning": "警告",
+    "critical": "严重",
+}
+CHANNEL_CN: dict[str, str] = {
+    "web": "网页",
+    "sse": "SSE推送",
+    "webhook": "Webhook",
+    "email": "邮件",
+}
+
+
+def level_to_cn(level: str | None) -> str:
+    """将英文/中文日志级别统一为中文展示名。"""
+    if not level:
+        return LEVEL_CN["INFO"]
+    text = str(level).strip()
+    if text in LEVEL_CN.values():
+        return text
+    return LEVEL_CN.get(text.upper(), text)
+
+
+def alert_level_to_cn(level: str | None) -> str:
+    """告警级别 info/warning/critical → 中文。"""
+    if not level:
+        return ALERT_LEVEL_CN["info"]
+    return ALERT_LEVEL_CN.get(str(level).strip().lower(), str(level))
+
+
+def channels_to_cn(channels) -> str:
+    """推送渠道列表转中文描述。"""
+    if isinstance(channels, str):
+        items = [c.strip() for c in channels.replace("，", ",").split(",") if c.strip()]
+    else:
+        items = [str(c).strip() for c in (channels or []) if str(c).strip()]
+    if not items:
+        return "无"
+    return "、".join(CHANNEL_CN.get(c, c) for c in items)
+
+
+def level_filter_variants(level: str | None) -> list[str]:
+    """查询时同时匹配历史英文级别与中文级别。"""
+    if not level:
+        return []
+    cn = level_to_cn(level)
+    variants = {cn, str(level).strip(), str(level).strip().upper()}
+    for en, name in LEVEL_CN.items():
+        if name == cn:
+            variants.add(en)
+    return list(variants)
+
+
+_LEVEL_STD_TO_PY = {
+    "DEBUG": logging.DEBUG,
+    "INFO": logging.INFO,
+    "WARN": logging.WARNING,
+    "ERROR": logging.ERROR,
+    "CRITICAL": logging.CRITICAL,
+}
+
 
 def localize_utc(dt: Optional[datetime]) -> Optional[str]:
     """将 naive UTC datetime 转为本地时间 (UTC+8) ISO 字符串。
@@ -101,10 +171,18 @@ def get_logger(name: str | None = None) -> logging.Logger:
 
 def _level_std_to_py(level: str) -> int:
     """DB 级别名称 -> Python logging 级别"""
-    return {"DEBUG": logging.DEBUG, "INFO": logging.INFO, "WARN": logging.WARNING, "ERROR": logging.ERROR, "CRITICAL": logging.CRITICAL}.get(level.upper(), logging.INFO)
+    cn = level_to_cn(level)
+    for en, name in LEVEL_CN.items():
+        if name == cn and en != "WARNING":
+            key = en
+            return _LEVEL_STD_TO_PY.get(key, logging.INFO)
+    return _LEVEL_STD_TO_PY.get(str(level).upper(), logging.INFO)
 
 
-_LEVEL_MAP = {"INFO": "info", "WARN": "warning", "ERROR": "error", "CRITICAL": "critical"}
+def _level_to_py_method(level: str) -> str:
+    cn = level_to_cn(level)
+    mapping = {"调试": "debug", "信息": "info", "警告": "warning", "错误": "error", "严重": "critical"}
+    return mapping.get(cn, "info")
 
 
 def write_log(
@@ -128,11 +206,12 @@ def write_log(
     """
     now = datetime.utcnow()
     detail_json = json.dumps(detail, ensure_ascii=False) if detail else None
+    level_cn = level_to_cn(level)
 
-    # 1) 数据库持久化
+    # 1) 数据库持久化（中文级别）
     log = SystemLog(
         category=category,
-        level=level,
+        level=level_cn,
         message=message,
         detail_json=detail_json,
         user_id=user_id,
@@ -143,8 +222,8 @@ def write_log(
     db.refresh(log)
 
     # 2) Python logging 文件/控制台输出
-    py_level = _level_std_to_py(level)
-    py_method = _LEVEL_MAP.get(level.upper(), "info")
+    py_level = _level_std_to_py(level_cn)
+    py_method = _level_to_py_method(level_cn)
     py_msg = f"[{category}] {message}"
     if detail:
         py_msg += f" | detail={json.dumps(detail, ensure_ascii=False)}"
@@ -159,11 +238,16 @@ def write_log(
         except Exception:
             detail_obj = None
 
+    from app.utils.log_display import category_cn as _category_cn, sanitize_log_message as _sanitize_log_message
+
     broadcast_log({
         "id": log.id,
         "category": log.category,
+        "category_cn": _category_cn(log.category),
         "level": log.level,
+        "level_cn": level_to_cn(log.level),
         "message": log.message,
+        "display_message": _sanitize_log_message(log.message, detail_obj),
         "detail_json": detail_obj,
         "user_id": log.user_id,
         "created_at": localize_utc(log.created_at),
@@ -199,19 +283,32 @@ def write_alert_log(
     channels: str,
 ):
     """专门的告警日志记录"""
+    from app.services.alert_agent import EVENT_TYPES
+
+    event_label = EVENT_TYPES.get(event_type, event_type)
     detail = {
         "alert_id": alert_id,
         "event_type": event_type,
+        "event_type_cn": event_label,
+        "level": level,
+        "level_cn": alert_level_to_cn(level),
+        "title": title,
+        "summary": summary,
         "channels": channels,
     }
+    alert_log_level = {
+        "info": "INFO",
+        "warning": "WARN",
+        "critical": "CRITICAL",
+    }.get(str(level).lower(), level)
     write_log(
         db,
         "alert",
-        f"[{level.upper()}] [{event_type}] {title} — {summary}",
-        level=level.upper(),
+        f"告警 #{alert_id} · {event_label} · {alert_level_to_cn(level)} — {summary}",
+        level=alert_log_level,
         detail=detail,
     )
-    _py_logger.log(_level_std_to_py(level), f"ALERT [{event_type}] {title} | channels={channels} | {summary}")
+    _py_logger.log(_level_std_to_py(alert_log_level), f"ALERT [{event_type}] {title} | channels={channels} | {summary}")
 
 
 def write_agent_log(

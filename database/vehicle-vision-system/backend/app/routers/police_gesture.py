@@ -9,9 +9,8 @@ from app.config import settings
 from app.database import get_db
 from app.models.records import PoliceGestureRecord
 from app.services.police_gesture_service import POLICE_GESTURES, police_gesture_service
-from app.services.alert_agent import alert_agent
 from app.utils.auth import get_current_user
-from app.utils.logger import write_log
+from app.utils.recognition_monitor import record_police_recognition
 from app.utils.video import process_video_file
 
 
@@ -63,15 +62,21 @@ async def recognize_video(
     try:
         result = process_video_file(police_gesture_service, save_path, interval, max_results, max_sampled_frames)
     except Exception as e:
-        alert_agent.record_gesture_failure("police")
-        await alert_agent.check_and_alert(db, "police")
-        write_log(db, "police_gesture", f"视频识别失败: {e}", level="ERROR")
+        await record_police_recognition(
+            db, source="视频上传", error=str(e),
+            user_id=user.id if user else None,
+        )
         raise HTTPException(500, str(e))
 
-    confidences = [float(row.get("confidence", 0.0)) for row in result.get("results", [])]
-    alert_agent.record_gesture_confidence("police", max(confidences, default=0.0))
-    await alert_agent.check_and_alert(db, "police")
-    write_log(db, "police_gesture", f"视频识别完成: sampled={result['sampled_frames']}, hits={result['result_count']}")
+    best = max(result.get("results", []), key=lambda row: float(row.get("confidence", 0.0)), default=None)
+    await record_police_recognition(
+        db, source="视频上传",
+        gesture_cn=(best or {}).get("gesture_cn", "无手势"),
+        confidence=float((best or {}).get("confidence", 0.0)),
+        gesture=(best or {}).get("gesture"),
+        user_id=user.id if user else None,
+        extra={"sampled_frames": result["sampled_frames"], "result_count": result["result_count"]},
+    )
     return result
 
 
@@ -143,7 +148,12 @@ async def save_history(
     db.add(record)
     db.commit()
     db.refresh(record)
-    write_log(db, "police_gesture", f"保存历史: {gesture_cn} ({record.confidence:.0%})")
+    await record_police_recognition(
+        db, source=source_type, gesture_cn=gesture_cn,
+        confidence=record.confidence, gesture=gesture,
+        user_id=user.id if user else None,
+        extra={"record_id": record.id},
+    )
     return {
         "saved": True,
         "record_id": record.id,

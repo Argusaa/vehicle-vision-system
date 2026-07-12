@@ -17,6 +17,9 @@ from app.utils.auth import hash_password
 from app.routers import auth, lpr, police_gesture, owner_gesture, monitor, websocket
 from app.services.alert_agent import alert_agent
 from app.services.llm_service import llm_service
+from app.services.lpr_service import lpr_service
+from app.services.lpr_video_service import lpr_video_service
+from app.services.police_gesture_service import police_gesture_service
 from app.utils.logger import get_logger, write_log, write_system_log
 
 main_logger = get_logger("main")
@@ -37,6 +40,37 @@ async def _startup_checks(db):
     else:
         status = await llm_service.test_connection()
         write_system_log(db, "LLM 连接正常" if status.get("ok") else "LLM 连接失败，使用模板降级", level="INFO" if status.get("ok") else "WARN", detail=status)
+
+    image_model_ready = lpr_service.model_available()
+    write_system_log(
+        db,
+        "车牌图片识别模型已就绪（RPNet）" if image_model_ready else "车牌图片识别模型未加载（RPNet）",
+        level="INFO" if image_model_ready else "WARN",
+        detail={"engine": "rpnet", "model": "fh02.pth", "ready": image_model_ready},
+    )
+    if not image_model_ready:
+        await alert_agent.handle_model_load_failure(
+            db, "fh02.pth", FileNotFoundError("RPNet 模型 fh02.pth 未就绪"),
+        )
+
+    video_status = lpr_video_service.model_status()
+    write_system_log(
+        db,
+        "车牌视频识别模型已就绪（YOLO+LPRNet）" if video_status.get("model_available") else "车牌视频识别模型未加载（YOLO+LPRNet）",
+        level="INFO" if video_status.get("model_available") else "WARN",
+        detail=video_status,
+    )
+    if not video_status.get("model_available"):
+        await alert_agent.handle_model_load_failure(
+            db, "yolo_lprnet", FileNotFoundError(video_status.get("message") or "YOLO+LPRNet 权重未就绪"),
+        )
+
+    try:
+        pose_info = police_gesture_service.pose_backend_info()
+        write_system_log(db, "交警手势识别后端已配置", level="INFO", detail=pose_info)
+    except Exception as exc:
+        write_system_log(db, "交警手势识别后端检查失败", level="WARN", detail={"error": str(exc)})
+        await alert_agent.handle_model_load_failure(db, "police_pose", exc)
 
 
 @asynccontextmanager

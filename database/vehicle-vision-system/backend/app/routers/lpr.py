@@ -12,10 +12,9 @@ from app.models.records import LicensePlateRecord
 from app.schemas import LPRResponse
 from app.services.lpr_service import lpr_service
 from app.services.lpr_video_service import lpr_video_service
-from app.services.alert_agent import alert_agent
 from app.utils.auth import get_current_user
 from app.utils.crypto import encrypt_json, decrypt_json
-from app.utils.logger import write_log
+from app.utils.recognition_monitor import record_lpr_recognition
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -37,13 +36,18 @@ async def recognize_image(
     try:
         result = lpr_service.recognize(content, filename, force_model=force_model)
     except Exception as e:
-        alert_agent.record_lpr_result(False)
-        await alert_agent.check_and_alert(db, "lpr")
-        write_log(db, "lpr", f"识别失败: {e}", level="ERROR", user_id=user.id if user else None)
+        await record_lpr_recognition(
+            db, success=False, source="图片上传", error=str(e),
+            user_id=user.id if user else None,
+        )
         raise HTTPException(500, str(e))
 
-    alert_agent.record_lpr_result(result["success"])
-    await alert_agent.check_and_alert(db, "lpr")
+    await record_lpr_recognition(
+        db, success=result["success"], source="图片上传",
+        plate_count=result["plate_count"], plates=result["plates"],
+        model_available=result.get("model_available"),
+        user_id=user.id if user else None,
+    )
 
     save_name = f"{uuid.uuid4().hex}.jpg"
     save_path = settings.upload_dir / "lpr" / save_name
@@ -62,7 +66,6 @@ async def recognize_image(
     db.commit()
     db.refresh(record)
 
-    write_log(db, "lpr", f"识别到 {result['plate_count']} 个车牌", detail={"plates": result["plates"]}, user_id=user.id if user else None)
     return LPRResponse(**result, record_id=record.id)
 
 
@@ -84,12 +87,11 @@ async def recognize_video(
         logger.info("[LPR-API] recognize-video summary frame_count=%s total_frames=%s annotated=%s", summary.get('frame_count'), summary.get('total_frames'), summary.get('annotated_video_path'))
     except Exception as e:
         logger.exception("[LPR-API] recognize-video failed")
-        alert_agent.record_lpr_result(False)
-        await alert_agent.check_and_alert(db, "lpr")
+        await record_lpr_recognition(
+            db, success=False, source="视频上传", error=str(e),
+            user_id=user.id if user else None,
+        )
         raise HTTPException(500, str(e))
-
-    alert_agent.record_lpr_result(bool(summary.get("best")))
-    await alert_agent.check_and_alert(db, "lpr")
 
     best = summary.get("best")
     record_id = None
@@ -157,11 +159,13 @@ async def recognize_video(
         for x in video_records[:10]
     ))
 
-    write_log(
-        db, "lpr",
-        f"视频识别完成，有效帧 {summary['frame_count']}/{summary['total_frames']}",
-        detail={"record_id": record_id, "engine": "yolo_lprnet", "plates": video_records},
+    valid_video_records = [p for p in video_records if (p.get("plate_number") or "") not in ("", "未识别")]
+    await record_lpr_recognition(
+        db, success=bool(valid_video_records), source="视频上传",
+        plate_count=len(valid_video_records), plates=video_records,
+        model_available=lpr_video_service.model_available(),
         user_id=user.id if user else None,
+        extra={"record_id": record_id, "sampled_frames": summary["frame_count"], "total_frames": summary["total_frames"]},
     )
     annotated_video_path = summary.get("annotated_video_path")
     annotated_video_url = None
@@ -198,6 +202,11 @@ async def recognize_rtsp_stream(
     label = (payload.get("label") or "").strip()
     status = lpr_video_service.model_status()
     if not status.get("model_available"):
+        await record_lpr_recognition(
+            db, success=False, source="RTSP/视频流", model_available=False,
+            error=status.get("message") or "YOLO+LPRNet 模型未加载",
+            user_id=user.id if user else None,
+        )
         raise HTTPException(500, status.get("message") or "YOLO+LPRNet 模型未加载")
 
     try:
@@ -213,14 +222,17 @@ async def recognize_rtsp_stream(
             summary = lpr_video_service.start_rtsp_stream(rtsp_url=rtsp_url, source_name=source_name, label=label)
     except Exception as e:
         logger.exception("[LPR-API] rtsp start failed")
+        await record_lpr_recognition(
+            db, success=False, source="RTSP/视频流", error=str(e),
+            user_id=user.id if user else None,
+            extra={"rtsp_url": rtsp_url, "source_name": source_name, "action": "start"},
+        )
         raise HTTPException(500, str(e))
 
-    write_log(
-        db,
-        "lpr",
-        f"启动沙盘 RTSP 识别: {label or source_name}",
-        detail={"rtsp_url": rtsp_url, "source": source_name, "dst_url": summary.get("dst_url")},
+    await record_lpr_recognition(
+        db, success=True, source="RTSP/视频流", model_available=True,
         user_id=user.id if user else None,
+        extra={"rtsp_url": rtsp_url, "source_name": source_name, "label": label, "action": "start"},
     )
     return summary
 
@@ -261,7 +273,14 @@ async def stop_rtsp_stream(
     db.add(record)
     db.commit()
     db.refresh(record)
-    write_log(db, "lpr", f"停止沙盘 RTSP 识别: {rtsp_url or source_name}", detail={"record_id": record.id, "plates": history.get("plates", [])}, user_id=user.id if user else None)
+    plates = history.get("plates", [])
+    valid_plates = [p for p in plates if (p.get("plate_number") or "") not in ("", "未识别")]
+    await record_lpr_recognition(
+        db, success=bool(valid_plates), source="RTSP/视频流",
+        plate_count=len(valid_plates), plates=plates,
+        user_id=user.id if user else None,
+        extra={"record_id": record.id, "source_name": source_name, "action": "stop"},
+    )
     return {**result, "record_id": record.id}
 
 
@@ -412,12 +431,18 @@ async def recognize_ccpd_sample(
     try:
         result = lpr_service.recognize(content, filename=relative, img_path=str(img_path))
     except Exception as e:
-        alert_agent.record_lpr_result(False)
-        await alert_agent.check_and_alert(db, "lpr")
+        await record_lpr_recognition(
+            db, success=False, source="CCPD样本", error=str(e),
+            user_id=user.id if user else None, extra={"relative": relative},
+        )
         raise HTTPException(500, str(e))
 
-    alert_agent.record_lpr_result(result["success"])
-    await alert_agent.check_and_alert(db, "lpr")
+    await record_lpr_recognition(
+        db, success=result["success"], source="CCPD样本",
+        plate_count=result["plate_count"], plates=result["plates"],
+        model_available=result.get("model_available"),
+        user_id=user.id if user else None, extra={"relative": relative},
+    )
 
     encrypted_plates = encrypt_json({"plates": result["plates"]})
     record = LicensePlateRecord(
@@ -431,5 +456,4 @@ async def recognize_ccpd_sample(
     db.commit()
     db.refresh(record)
 
-    write_log(db, "lpr", f"CCPD 样本识别: {relative}", detail={"plates": result["plates"]}, user_id=user.id if user else None)
     return LPRResponse(**result, record_id=record.id)

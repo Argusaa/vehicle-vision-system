@@ -26,7 +26,8 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models.alerts import AlertEvent
-from app.utils.logger import write_log, log_exception, write_alert_log, write_agent_log, get_logger, localize_utc as _localize_utc
+from app.utils.logger import write_log, log_exception, write_alert_log, write_agent_log, get_logger, localize_utc as _localize_utc, alert_level_to_cn, channels_to_cn, level_to_cn
+from app.utils.log_display import format_log_entry, format_record_entry, category_cn, record_type_cn, sanitize_log_message
 
 agent_logger = get_logger("alert_agent")
 
@@ -466,7 +467,7 @@ class AlertAgent:
                     detail = row.detail_json
             result.append({
                 "id": row.id,
-                "level": row.level,
+                "level": level_to_cn(row.level),
                 "message": row.message,
                 "detail": detail,
                 "created_at": _localize_utc(row.created_at),
@@ -562,7 +563,7 @@ class AlertAgent:
 
         write_agent_log(
             db,
-            f"告警级别决策: {EVENT_TYPES.get(event_type, event_type)} → {decision_level}",
+            f"告警级别决策: {EVENT_TYPES.get(event_type, event_type)} → {alert_level_to_cn(decision_level)}",
             level="INFO" if decision_level == "info" else ("WARN" if decision_level == "warning" else "CRITICAL"),
             detail={
                 "event_type": event_type,
@@ -704,28 +705,48 @@ class AlertAgent:
     ) -> AlertEvent:
         """创建告警事件（生成摘要、持久化、多渠道推送）"""
         from app.services.llm_service import llm_service
+        from app.utils.alert_analysis import build_structured_alert, merge_llm_structured
 
-        # 1) 通过 LLM 生成结构化告警摘要（失败时自动降级模板，不递归调用 LLM）
+        # 1) 规则结构化分析 + LLM 自然语言润色（字段互不重叠）
         summary_data = await llm_service.generate_alert_summary(
             event_type, level, context, force_template=force_template,
         )
-        llm_failed = summary_data.pop("_llm_failed", False)
+        summary_data.pop("_llm_failed", None)
+
+        now = datetime.utcnow()
+        structured = build_structured_alert(
+            event_type, level, context, created_at=now,
+            root_cause=summary_data.get("root_cause"),
+            suggestion=summary_data.get("suggestion"),
+            summary=summary_data.get("summary"),
+        )
+        merged = merge_llm_structured(summary_data, structured)
+
+        detail_payload = {
+            **context,
+            "structured": {
+                "event_type_cn": merged["event_type_cn"],
+                "occurred_at": merged["occurred_at"],
+                "impact_scope": merged["impact_scope"],
+                "severity_assessment": merged["severity_assessment"],
+            },
+        }
 
         # 2) 持久化
-        now = datetime.utcnow()
         alert = AlertEvent(
             level=level,
             event_type=event_type,
             title=summary_data.get("title", EVENT_TYPES.get(event_type, event_type)),
-            summary=summary_data.get("summary", ""),
-            detail_json=json.dumps(context, ensure_ascii=False),
-            root_cause=summary_data.get("root_cause"),
-            suggestion=summary_data.get("suggestion"),
+            summary=merged.get("summary", ""),
+            detail_json=json.dumps(detail_payload, ensure_ascii=False),
+            root_cause=merged.get("root_cause"),
+            suggestion=merged.get("suggestion"),
             channels_sent="web",
             system_health_json=json.dumps({
                 "perception": self.get_perception_snapshot(),
                 "decision_level": level,
                 "event_type": event_type,
+                "structured": detail_payload.get("structured"),
             }, ensure_ascii=False),
             created_at=now,
         )
@@ -744,12 +765,17 @@ class AlertAgent:
             "type": "alert",
             "id": alert.id,
             "level": level,
+            "level_cn": alert_level_to_cn(level),
             "event_type": event_type,
+            "event_type_cn": EVENT_TYPES.get(event_type, event_type),
             "title": alert.title,
             "summary": alert.summary,
             "root_cause": alert.root_cause,
             "suggestion": alert.suggestion,
-            "detail": context,
+            "impact_scope": merged.get("impact_scope"),
+            "occurred_at": merged.get("occurred_at"),
+            "severity_assessment": merged.get("severity_assessment"),
+            "detail": detail_payload,
             "created_at": _localize_utc(alert.created_at),
         }
 
@@ -788,9 +814,17 @@ class AlertAgent:
 
         write_agent_log(
             db,
-            f"告警 #{alert.id} 已推送: [{level}] {event_type} → {channels}",
+            f"告警 #{alert.id} 已推送 · {EVENT_TYPES.get(event_type, event_type)} · {alert_level_to_cn(level)} · {channels_to_cn(channels)}",
             level="INFO" if level == "info" else ("WARN" if level == "warning" else "CRITICAL"),
-            detail={"alert_id": alert.id, "event_type": event_type, "channels": channels},
+            detail={
+                "alert_id": alert.id,
+                "event_type": event_type,
+                "event_type_cn": EVENT_TYPES.get(event_type, event_type),
+                "level": level,
+                "level_cn": alert_level_to_cn(level),
+                "channels": channels,
+                "channels_cn": channels_to_cn(channels),
+            },
         )
 
         agent_logger.info(
@@ -975,22 +1009,29 @@ class AlertAgent:
     def _alert_to_dict(self, a: AlertEvent) -> dict[str, Any]:
         """将告警 ORM 对象转为 API 字典"""
         detail = {}
+        structured = {}
         if a.detail_json:
             try:
                 detail = json.loads(a.detail_json)
+                structured = detail.get("structured") or {}
             except Exception:
                 detail = {"raw": a.detail_json}
         return {
             "id": a.id,
             "level": a.level,
+            "level_cn": alert_level_to_cn(a.level),
             "event_type": a.event_type,
             "event_type_cn": EVENT_TYPES.get(a.event_type, a.event_type),
             "title": a.title,
             "summary": a.summary,
             "root_cause": a.root_cause,
             "suggestion": a.suggestion,
+            "impact_scope": structured.get("impact_scope"),
+            "occurred_at": structured.get("occurred_at"),
+            "severity_assessment": structured.get("severity_assessment"),
             "channels": a.channels_sent,
             "status": a.status,
+            "status_cn": "已处理" if a.status == "resolved" else "未处理",
             "resolution_note": a.resolution_note,
             "detail": detail,
             "system_health": json.loads(a.system_health_json) if a.system_health_json else {},
@@ -1212,7 +1253,13 @@ class AlertAgent:
         cause_chain: list[dict] = []
 
         if detail:
-            trigger_desc = detail.get("message") or detail.get("error") or detail.get("source") or str(detail)[:120]
+            from app.utils.alert_analysis import (
+                format_trigger_conditions,
+                format_log_chain_title,
+                humanize_replay_log_message,
+            )
+
+            trigger_desc = format_trigger_conditions(event_type, detail)
             cause_chain.append({
                 "step": 1,
                 "type": "trigger",
@@ -1225,8 +1272,12 @@ class AlertAgent:
             cause_chain.append({
                 "step": len(cause_chain) + 1,
                 "type": "log",
-                "title": f"{log.get('category', '')} · {log.get('level', '')}",
-                "description": log.get("message", ""),
+                "title": format_log_chain_title(log.get("category"), log.get("level")),
+                "category": log.get("category"),
+                "level": log.get("level"),
+                "description": log.get("display_message") or humanize_replay_log_message(
+                    log.get("message", ""), log.get("category"),
+                ),
                 "timestamp": log.get("created_at"),
             })
 
@@ -1253,14 +1304,31 @@ class AlertAgent:
             "warning": "可能影响部分功能体验，建议尽快排查",
             "info": "提示性信息，建议关注趋势变化",
         }
+        structured = {}
+        if alert.detail_json:
+            try:
+                structured = json.loads(alert.detail_json).get("structured") or {}
+            except Exception:
+                pass
+        from app.utils.alert_analysis import build_event_impact, build_severity_assessment
+
+        impact_text = structured.get("impact_scope") or build_event_impact(
+            event_type, alert.level, detail,
+        )
+        severity = structured.get("severity_assessment") or build_severity_assessment(
+            event_type, alert.level, detail,
+        )
 
         return {
             "primary_cause": alert.root_cause or "暂无根因分析，可点击「深度分析」获取 AI 解读",
             "suggestion": alert.suggestion or "",
             "contributing_factors": contributing,
             "cause_chain": cause_chain,
-            "impact": impact_map.get(alert.level, "需进一步评估"),
+            "impact": impact_text,
+            "severity_assessment": severity,
             "event_type_cn": EVENT_TYPES.get(event_type, event_type),
+            "occurred_at": structured.get("occurred_at"),
+            "impact_scope": impact_text,
         }
 
     def _build_replay_timeline(
@@ -1273,33 +1341,38 @@ class AlertAgent:
         events: list[dict] = []
 
         for log in related_logs:
+            cat = log.get("category_cn") or category_cn(log.get("category"))
+            lvl = log.get("level_cn") or level_to_cn(log.get("level"))
+            msg = log.get("display_message") or sanitize_log_message(log.get("message"), log.get("detail_json") or log.get("detail"))
             events.append({
                 "time": log.get("created_at"),
                 "type": "log",
-                "level": log.get("level", "INFO"),
-                "title": f"[{log.get('category', '')}] {log.get('message', '')}",
-                "detail": log.get("detail"),
+                "level": lvl,
+                "title": f"{cat} · {msg[:80]}{'…' if len(msg) > 80 else ''}",
+                "detail": None,
             })
 
         for rec in related_records:
-            title = rec.get("type", "record")
+            type_cn = rec.get("type_cn") or record_type_cn(rec.get("type"))
             if rec.get("gesture_cn"):
-                title = f"{rec['gesture_cn']} ({round((rec.get('confidence') or 0) * 100)}%)"
+                title = f"{rec['gesture_cn']}（置信度 {round((rec.get('confidence') or 0) * 100)}%）"
+            else:
+                title = f"{type_cn}记录 #{rec.get('id', '')}"
             events.append({
                 "time": rec.get("created_at"),
                 "type": "record",
-                "level": "info",
+                "level": "信息",
                 "title": f"识别记录 · {title}",
-                "detail": rec,
+                "detail": None,
                 "image": rec.get("annotated_image"),
             })
 
         events.append({
             "time": _localize_utc(alert.created_at),
             "type": "alert",
-            "level": alert.level,
+            "level": alert_level_to_cn(alert.level),
             "title": f"告警触发 · {alert.title}",
-            "detail": {"summary": alert.summary, "root_cause": alert.root_cause},
+            "detail": None,
         })
 
         def _sort_key(e: dict) -> str:
@@ -1335,13 +1408,13 @@ class AlertAgent:
                     .all()
                 )
                 for r in rows:
-                    records.append({
+                    records.append(format_record_entry({
                         "type": "lpr",
                         "id": r.id,
                         "source_type": r.source_type,
                         "annotated_image": r.annotated_image,
                         "created_at": _localize_utc(r.created_at),
-                    })
+                    }))
             elif event_type == "gesture_low_confidence":
                 module = None
                 if alert.detail_json:
@@ -1358,14 +1431,14 @@ class AlertAgent:
                         .all()
                     )
                     for r in rows:
-                        records.append({
+                        records.append(format_record_entry({
                             "type": "owner_gesture",
                             "id": r.id,
                             "gesture_cn": r.gesture_cn,
                             "confidence": r.confidence,
                             "annotated_image": r.annotated_image,
                             "created_at": _localize_utc(r.created_at),
-                        })
+                        }))
                 else:
                     rows = (
                         db.query(PoliceGestureRecord)
@@ -1375,14 +1448,14 @@ class AlertAgent:
                         .all()
                     )
                     for r in rows:
-                        records.append({
+                        records.append(format_record_entry({
                             "type": "police_gesture",
                             "id": r.id,
                             "gesture_cn": r.gesture_cn,
                             "confidence": r.confidence,
                             "annotated_image": r.annotated_image,
                             "created_at": _localize_utc(r.created_at),
-                        })
+                        }))
         except (OperationalError, ProgrammingError):
             return []
 
@@ -1417,7 +1490,7 @@ class AlertAgent:
                     SystemLog.created_at >= time_window_start,
                     SystemLog.created_at <= time_window_end,
                     or_(
-                        SystemLog.level.in_(["WARN", "ERROR", "CRITICAL"]),
+                        SystemLog.level.in_(["WARN", "ERROR", "CRITICAL", "警告", "错误", "严重"]),
                         SystemLog.category.in_(categories),
                     ),
                 )
@@ -1432,14 +1505,14 @@ class AlertAgent:
                         log_detail = json.loads(log.detail_json)
                     except Exception:
                         log_detail = log.detail_json
-                relevant_logs.append({
-                    "id": log.id,
-                    "category": log.category,
-                    "level": log.level,
-                    "message": log.message,
-                    "detail": log_detail,
-                    "created_at": _localize_utc(log.created_at),
-                })
+                relevant_logs.append(format_log_entry(
+                    category=log.category,
+                    level=log.level,
+                    message=log.message,
+                    detail=log_detail,
+                    id=log.id,
+                    created_at=_localize_utc(log.created_at),
+                ))
 
         related_records = self._get_related_records(db, alert)
         cause_analysis = self.build_cause_analysis(alert, detail, relevant_logs)
@@ -1452,23 +1525,7 @@ class AlertAgent:
             except Exception:
                 health = {"raw": alert.system_health_json}
         return {
-            "alert": {
-                "id": alert.id,
-                "level": alert.level,
-                "event_type": alert.event_type,
-                "event_type_cn": EVENT_TYPES.get(alert.event_type, alert.event_type),
-                "title": alert.title,
-                "summary": alert.summary,
-                "root_cause": alert.root_cause,
-                "suggestion": alert.suggestion,
-                "detail": detail,
-                "system_health": health,
-                "channels": alert.channels_sent,
-                "status": alert.status,
-                "resolution_note": alert.resolution_note,
-                "created_at": _localize_utc(alert.created_at),
-                "resolved_at": _localize_utc(alert.resolved_at),
-            },
+            "alert": self._alert_to_dict(alert),
             "related_logs": relevant_logs,
             "related_records": related_records,
             "cause_analysis": cause_analysis,
@@ -1482,6 +1539,7 @@ class AlertAgent:
                 "key": key,
                 "name": name,
                 "default_level": DEFAULT_LEVELS.get(key, "warning"),
+                "default_level_cn": alert_level_to_cn(DEFAULT_LEVELS.get(key, "warning")),
             }
             for key, name in EVENT_TYPES.items()
         ]

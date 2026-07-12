@@ -505,30 +505,23 @@ def assistant_answer_for_user(
         return _with_hint(humanize_tech_terms(f"针对「{title}」，{step_text}"))
 
     if q_intent == "severity":
-        lv = context.get("level")
-        if lv == "critical":
-            return _with_hint(
-                humanize_tech_terms(
-                    f"这条「{title}」比较紧急，建议优先处理。\n"
-                    f"{plan['impact']}\n\n{_format_steps_conversational(steps)}"
-                )
-            )
-        if lv == "warning":
-            return _with_hint(
-                humanize_tech_terms(
-                    f"「{title}」需要留意一下，不过一般不至于马上出大问题。\n{plan['impact']}"
-                )
-            )
-        return _with_hint(
-            humanize_tech_terms(f"「{title}」不算特别急，有空处理一下就好。\n{plan['impact']}")
+        from app.utils.alert_analysis import build_severity_assessment
+
+        structured = (context.get("detail") or {}).get("structured") or {}
+        sev = structured.get("severity_assessment") or build_severity_assessment(
+            event_type or "", context.get("level") or "warning", detail,
         )
+        return _with_hint(humanize_tech_terms(sev.get("summary_text", sev.get("decision_reason", ""))))
 
     if q_intent == "impact":
-        impact = plan["impact"]
+        from app.utils.alert_analysis import build_event_impact
+
+        structured = (context.get("detail") or {}).get("structured") or {}
+        impact = structured.get("impact_scope") or build_event_impact(
+            event_type or "", context.get("level") or "warning", detail,
+        )
         if detail_hint:
-            return humanize_tech_terms(
-                f"简单说，{impact}\n具体情况是：{detail_hint}"
-            )
+            return humanize_tech_terms(f"对您来说，{impact}\n具体情况：{detail_hint}")
         return humanize_tech_terms(f"对您来说，{impact}")
 
     # general：综合回答，避免千篇一律

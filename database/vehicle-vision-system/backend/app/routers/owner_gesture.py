@@ -13,14 +13,18 @@ from app.config import settings
 from app.database import get_db
 from app.models.records import OwnerGestureRecord, VehicleState
 from app.schemas import GestureResponse, VehicleStateResponse
-from app.services.alert_agent import alert_agent
 from app.services.owner_gesture_service import OWNER_GESTURES, owner_gesture_service
 from app.utils.auth import get_current_user
-from app.utils.logger import write_log
+from app.utils.recognition_monitor import (
+    record_owner_confirm,
+    record_owner_recognition,
+    record_owner_vehicle_state,
+)
 
 router = APIRouter(prefix="/api/owner-gesture", tags=["车主手势控车"])
 
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
+_owner_stream_last_signature: tuple | None = None
 
 
 def _state_to_dict(state: VehicleState) -> dict:
@@ -64,7 +68,12 @@ def _get_or_create_state(db: Session, user_id: int | None) -> VehicleState:
     return state
 
 
-def _apply_action_to_db(db: Session, user_id: int | None, action: str) -> dict:
+def _apply_action_to_db(
+    db: Session,
+    user_id: int | None,
+    action: str,
+    source: str = "手势控车",
+) -> dict:
     if not action:
         state = _get_or_create_state(db, user_id)
         return _state_to_dict(state)
@@ -73,7 +82,11 @@ def _apply_action_to_db(db: Session, user_id: int | None, action: str) -> dict:
     _apply_state_dict_to_model(state, updated)
     db.commit()
     db.refresh(state)
-    return _state_to_dict(state)
+    result = _state_to_dict(state)
+    record_owner_vehicle_state(
+        db, source=source, vehicle_state=result, action=action, user_id=user_id,
+    )
+    return result
 
 
 def _persist_final_state(db: Session, user_id: int | None, final_state: dict | None) -> dict | None:
@@ -186,22 +199,22 @@ async def recognize(
                 latest_state = _get_or_create_state(db, user_id)
                 result["vehicle_state"] = _state_to_dict(latest_state)
     except Exception as exc:
-        write_log(db, "owner_gesture", f"识别失败: {exc}", level="ERROR")
+        await record_owner_recognition(
+            db, source="视频上传" if is_video else "图片上传",
+            error=str(exc), user_id=user_id,
+        )
         raise HTTPException(500, str(exc))
 
-    alert_agent.record_gesture_confidence("owner", result["confidence"])
-    await alert_agent.check_and_alert(db, "owner")
+    await record_owner_recognition(
+        db, source="视频上传" if is_video else "图片上传",
+        gesture_cn=result.get("gesture_cn"), confidence=result.get("confidence", 0),
+        gesture=result.get("gesture"), action=result.get("action"),
+        needs_confirmation=bool(result.get("needs_confirmation")),
+        confirm_prompt=result.get("confirm_prompt"), vehicle_state=result.get("vehicle_state"),
+        user_id=user_id,
+    )
 
     record = _create_record(db, user_id, "video" if is_video else "image", save_path, result)
-    if result.get("action"):
-        write_log(db, "owner_gesture", f"手势触发: {result['gesture_cn']} -> {result['action']}")
-    elif is_video:
-        write_log(
-            db,
-            "owner_gesture",
-            f"视频识别完成: {result['gesture_cn']} ({result['confidence']:.0%})",
-        )
-
     return GestureResponse(**result, record_id=record.id)
 
 
@@ -225,7 +238,7 @@ async def recognize_video(
             respect_standby=True,
         )
     except Exception as exc:
-        write_log(db, "owner_gesture", f"视频识别失败: {exc}", level="ERROR")
+        await record_owner_recognition(db, source="视频上传", error=str(exc), user_id=user_id)
         raise HTTPException(500, str(exc))
 
     best_result = payload.get("best_result") or payload.get("preview_result") or _empty_video_result()
@@ -236,15 +249,17 @@ async def recognize_video(
         latest_state = _get_or_create_state(db, user_id)
         best_result["vehicle_state"] = _state_to_dict(latest_state)
 
-    alert_agent.record_gesture_confidence("owner", best_result["confidence"])
-    await alert_agent.check_and_alert(db, "owner")
+    await record_owner_recognition(
+        db, source="视频上传",
+        gesture_cn=best_result.get("gesture_cn"), confidence=best_result.get("confidence", 0),
+        gesture=best_result.get("gesture"), action=best_result.get("action"),
+        needs_confirmation=bool(best_result.get("needs_confirmation")),
+        confirm_prompt=best_result.get("confirm_prompt"), vehicle_state=best_result.get("vehicle_state"),
+        user_id=user_id,
+        extra={"sampled_frames": payload["sampled_frames"], "recognized_frames": payload["recognized_frames"]},
+    )
 
     record = _create_record(db, user_id, "video", save_path, best_result)
-    write_log(
-        db,
-        "owner_gesture",
-        f"视频识别完成: 采样 {payload['sampled_frames']} 帧, 命中 {payload['recognized_frames']} 帧",
-    )
     return {
         **payload,
         "best_result": best_result,
@@ -261,12 +276,19 @@ def confirm_gesture(
 ):
     pending = owner_gesture_service.confirm_pending(accept)
     if not pending:
+        record_owner_confirm(
+            db, source="二次确认", accepted=accept, pending=None,
+            user_id=user.id if user else None,
+        )
         return {"confirmed": False, "action": None, "message": "没有待确认的动作或已取消"}
 
     user_id = user.id if user else None
     action = pending["action"]
-    vehicle_state = _apply_action_to_db(db, user_id, action)
-    write_log(db, "owner_gesture", f"手势二次确认执行: {pending['gesture_cn']} -> {action}")
+    vehicle_state = _apply_action_to_db(db, user_id, action, source="二次确认")
+    record_owner_confirm(
+        db, source="二次确认", accepted=True, pending=pending,
+        vehicle_state=vehicle_state, user_id=user_id,
+    )
     return {
         "confirmed": True,
         "action": action,
@@ -292,8 +314,13 @@ def update_vehicle_state(
     state = _get_or_create_state(db, user.id if user else None)
     _apply_state_dict_to_model(state, data.model_dump())
     db.commit()
-    write_log(db, "owner_gesture", "手动更新车辆状态", detail=data.model_dump())
-    return data
+    db.refresh(state)
+    result = _state_to_dict(state)
+    record_owner_vehicle_state(
+        db, source="手动更新", vehicle_state=result,
+        user_id=user.id if user else None,
+    )
+    return VehicleStateResponse(**result)
 
 
 @router.get("/gestures", summary="支持的手势列表")
@@ -334,6 +361,7 @@ def history(skip: int = 0, limit: int = 20, db: Session = Depends(get_db)):
 
 @router.websocket("/ws-stream")
 async def gesture_websocket(websocket: WebSocket, db: Session = Depends(get_db)):
+    global _owner_stream_last_signature
     from app.config import settings as _settings
     from app.models.user import User
     from jose import JWTError, jwt
@@ -372,11 +400,17 @@ async def gesture_websocket(websocket: WebSocket, db: Session = Depends(get_db))
                 accept = bool(msg.get("accept", True))
                 pending = owner_gesture_service.confirm_pending(accept)
                 if pending:
-                    vehicle_state = _apply_action_to_db(db, user_id, pending["action"])
+                    vehicle_state = _apply_action_to_db(db, user_id, pending["action"], source="实时二次确认")
                     pending["vehicle_state"] = vehicle_state
-                    write_log(db, "owner_gesture", f"实时手势二次确认: {pending['gesture_cn']} -> {pending['action']}")
+                    record_owner_confirm(
+                        db, source="WebSocket流", accepted=True, pending=pending,
+                        vehicle_state=vehicle_state, user_id=user_id,
+                    )
                     await websocket.send_json({"type": "confirmed", "data": pending})
                 else:
+                    record_owner_confirm(
+                        db, source="WebSocket流", accepted=accept, pending=None, user_id=user_id,
+                    )
                     await websocket.send_json({"type": "confirmed", "data": None})
                 continue
 
@@ -384,12 +418,14 @@ async def gesture_websocket(websocket: WebSocket, db: Session = Depends(get_db))
             try:
                 img_bytes = base64.b64decode(data_b64)
             except Exception:
+                await record_owner_recognition(db, source="WebSocket流", error="invalid base64", user_id=user_id)
                 await websocket.send_json({"type": "error", "message": "invalid base64"})
                 continue
 
             arr = np.frombuffer(img_bytes, np.uint8)
             frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
             if frame is None:
+                await record_owner_recognition(db, source="WebSocket流", error="decode failed", user_id=user_id)
                 await websocket.send_json({"type": "error", "message": "decode failed"})
                 continue
 
@@ -402,20 +438,34 @@ async def gesture_websocket(websocket: WebSocket, db: Session = Depends(get_db))
             )
 
             if result.get("action"):
-                result["vehicle_state"] = _apply_action_to_db(db, user_id, result["action"])
-                alert_agent.record_gesture_confidence("owner", result["confidence"])
-                await alert_agent.check_and_alert(db, "owner")
-                write_log(db, "owner_gesture", f"实时手势触发: {result['gesture_cn']} -> {result['action']}")
+                result["vehicle_state"] = _apply_action_to_db(
+                    db, user_id, result["action"], source="实时手势",
+                )
 
             if not result.get("vehicle_state"):
                 latest_state = _get_or_create_state(db, user_id)
                 result["vehicle_state"] = _state_to_dict(latest_state)
+
+            signature = (
+                result.get("gesture"), round(float(result.get("confidence", 0)), 1),
+                result.get("action"), bool(result.get("needs_confirmation")),
+            )
+            if signature != _owner_stream_last_signature:
+                _owner_stream_last_signature = signature
+                await record_owner_recognition(
+                    db, source="WebSocket流", gesture_cn=result.get("gesture_cn"),
+                    confidence=result.get("confidence", 0), gesture=result.get("gesture"),
+                    action=result.get("action"), needs_confirmation=bool(result.get("needs_confirmation")),
+                    confirm_prompt=result.get("confirm_prompt"), vehicle_state=result.get("vehicle_state"),
+                    user_id=user_id, extra={"stream": True},
+                )
 
             await websocket.send_json({"type": "result", "data": result})
     except WebSocketDisconnect:
         pass
     except Exception as exc:
         try:
+            await record_owner_recognition(db, source="WebSocket流", error=str(exc), user_id=user_id)
             await websocket.send_json({"type": "error", "message": str(exc)})
         except Exception:
             pass
