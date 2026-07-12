@@ -696,7 +696,19 @@ async def assistant_chat(payload: AssistantQuery, db: Session = Depends(get_db))
         }
 
     answer = await llm_service.ask_assistant(payload.question, context, intent=intent)
-    return {"answer": answer, "context": context, "needs_clarification": False, "intent": intent}
+    return {
+        "answer": answer,
+        "context": context,
+        "needs_clarification": False,
+        "intent": intent,
+        "ai": {
+            "mode": getattr(llm_service, "last_assistant_mode", "template"),
+            "reason": getattr(llm_service, "last_assistant_reason", ""),
+            "configured": settings.llm_configured,
+            "provider": settings.llm_provider_label,
+            "model": settings.effective_llm_model,
+        },
+    }
 
 
 # ════════════════════════════════════════════

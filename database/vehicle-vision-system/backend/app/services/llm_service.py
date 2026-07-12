@@ -118,13 +118,18 @@ class LLMService:
             db.close()
 
     async def _record_llm_failure(self, exc: Exception | None = None) -> None:
-        from app.database import SessionLocal
         from app.services.alert_agent import alert_agent
 
-        alert_agent.record_llm_call(success=False)
         db = SessionLocal()
         try:
-            await alert_agent.check_and_alert(db, "llm")
+            # LLM 自身失败所产生的告警必须强制使用本地模板。若这里再次请求
+            # LLM 生成摘要，会形成“失败 -> 告警摘要 -> 再失败”的递归风暴，
+            # 最终耗尽数据库连接池。
+            await alert_agent.handle_llm_failure(
+                db,
+                exc or RuntimeError("LLM request failed"),
+                {"source": "llm_service"},
+            )
         finally:
             db.close()
 
@@ -194,6 +199,7 @@ class LLMService:
                 "tokens_used": self._extract_tokens(data),
             }
         except Exception as e:
+            llm_logger.warning("LLM 智能助手调用失败，降级本地模板: %s", e)
             await self._record_llm_failure(e)
             llm_logger.warning("LLM 连接测试失败: %s", e)
             return {
@@ -219,6 +225,8 @@ class LLMService:
         knowledge = build_assistant_knowledge(context)
 
         if not settings.llm_configured:
+            self.last_assistant_mode = "template"
+            self.last_assistant_reason = "not_configured"
             return self._template_assistant_answer(question, context, intent=q_intent)
 
         plan = knowledge["plan"]
@@ -267,14 +275,22 @@ class LLMService:
             answer = data["choices"][0]["message"]["content"]
             answer = humanize_tech_terms(self._strip_markdown(answer))
             if not answer or len(answer.strip()) < 8:
+                self.last_assistant_mode = "template"
+                self.last_assistant_reason = "empty_response"
                 return self._template_assistant_answer(question, context, intent=q_intent)
             if _is_useless_suggestion(answer):
                 template = self._template_assistant_answer(question, context, intent=q_intent)
                 if template and len(template) > len(answer):
+                    self.last_assistant_mode = "template"
+                    self.last_assistant_reason = "low_quality_response"
                     return template
+            self.last_assistant_mode = "llm"
+            self.last_assistant_reason = ""
             return answer
         except Exception as e:
             await self._record_llm_failure(e)
+            self.last_assistant_mode = "template"
+            self.last_assistant_reason = "api_error"
             return self._template_assistant_answer(question, context, intent=q_intent)
 
     def _template_assistant_answer(

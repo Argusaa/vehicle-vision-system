@@ -29,6 +29,8 @@ const App = {
     this.bindFileInputs();
     this.bindLprDragDrop();
     this.bindPoliceImageViewer();
+    if (this.initSelectChevrons) this.initSelectChevrons();
+    if (this.initAssistant) this.initAssistant();
     if (this.token) this.showMain();
     else document.getElementById('login-page').classList.add('active');
   },
@@ -182,12 +184,29 @@ const App = {
   },
 
   onViewChange(view) {
+    const previousView = this.currentView;
+    this.currentView = view;
+    if (previousView === 'logs' && view !== 'logs' && this.disconnectLogStream) this.disconnectLogStream();
     if (view === 'dashboard') this.loadDashboard();
     if (view === 'lpr') { this.loadLprHistory(); this.loadLprModelStatus(); }
     if (view === 'police') { this.loadPolicePoseBackend(); this.loadPoliceGestures(); this.loadPoliceHistory(); this.ensureCameraSelector('police'); }
     if (view === 'owner') { this.loadOwnerGestures(); this.loadVehicleState(); this.refreshCameraDevices('owner'); }
-    if (view === 'alerts') { this.loadAlertTypes(); this.loadAlerts(); this.loadAgentBriefing(); this.loadMonitorDiagnostics(); this.connectAlertSse(); }
-    if (view === 'logs') { this.loadLogs(); this.loadLogStats(); }
+    if (view === 'alerts') {
+      this.connectAlertWs();
+      if (this.connectSSE) this.connectSSE();
+      this.loadAlerts();
+      this.loadAlertTypes();
+      if (this.loadAlertAnalytics) this.loadAlertAnalytics();
+      if (this.loadAgentActivity) this.loadAgentActivity();
+      if (this.loadAlertNotifications) this.loadAlertNotifications();
+      if (this.loadAlertConfig) this.loadAlertConfig();
+    }
+    if (view === 'logs') {
+      if (this.resetLogFilters) this.resetLogFilters(false);
+      if (this.syncLogDatetimeState) this.syncLogDatetimeState();
+      this.loadLogs();
+      if (this.connectLogStream) this.connectLogStream();
+    }
   },
 
   async login() {
@@ -321,6 +340,9 @@ const App = {
     document.getElementById('main-page').classList.add('active');
     this.loadDashboard();
     this.connectAlertWs();
+    if (this.connectSSE) this.connectSSE();
+    if (this.refreshAgentStats) this.refreshAgentStats();
+    if (this.startAgentMonitorLoop) this.startAgentMonitorLoop();
     if (this.token) {
       this.api('/api/auth/me').then(u => {
         document.getElementById('user-info').textContent = u.username;
@@ -332,6 +354,8 @@ const App = {
     this.token = '';
     localStorage.removeItem('token');
     this.stopVideoStream();
+    if (this.disconnectSSE) this.disconnectSSE();
+    if (this.stopAgentMonitorLoop) this.stopAgentMonitorLoop();
     location.reload();
   },
 

@@ -7,6 +7,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 
 from app.database import Base, SessionLocal, engine
+from app.config import settings
 from app.models.alerts import AlertEvent
 from app.models.logs import SystemLog
 from app.services.alert_agent import alert_agent, EVENT_TYPES, DEFAULT_LEVELS
@@ -25,8 +26,12 @@ class AlertAgentTest(unittest.IsolatedAsyncioTestCase):
         alert_agent._confidence_history.clear()
         alert_agent._failure_timestamps.clear()
         alert_agent._token_usage = {"used": 0, "limit": 100000}
+        # 单元测试必须可离线、可重复，不能消耗开发者真实 LLM 配额。
+        self._llm_api_key = settings.llm_api_key
+        settings.llm_api_key = ""
 
     async def asyncTearDown(self):
+        settings.llm_api_key = self._llm_api_key
         self.db.close()
         Base.metadata.drop_all(bind=engine)
 
