@@ -98,7 +98,7 @@ const App = {
   },
 
   bindFileInputs() {
-    document.getElementById('lpr-file').onchange = (e) => this.handleLprInput(e.target.files[0]);
+    document.getElementById('lpr-file').onchange = (e) => this.handleLprInput(e.target.files);
     document.getElementById('police-file').onchange = (e) => this.uploadFile('police', e.target.files[0]);
     document.getElementById('owner-file').onchange = (e) => this.uploadFile('owner', e.target.files[0]);
   },
@@ -113,8 +113,8 @@ const App = {
       zone.addEventListener(evt, (e) => { e.preventDefault(); zone.classList.remove('drag-over'); });
     });
     zone.addEventListener('drop', (e) => {
-      const file = e.dataTransfer?.files?.[0];
-      if (file) this.handleLprInput(file);
+      const files = e.dataTransfer?.files;
+      if (files?.length) this.handleLprInput(files);
     });
   },
 
@@ -370,21 +370,39 @@ const App = {
     return type.startsWith('video/') || /\.(mp4|webm|mov|mkv|avi|m4v)$/i.test(name);
   },
 
-  async handleLprInput(file) {
-    if (!file) return;
-    this.clearLprDisplay();
-    if (this.isVideoFile(file)) {
-      this.setLprLoading(true, { forceHide: true });
-      await this.startVideoFileStream(file);
+  async handleLprInput(input) {
+    const files = Array.from(input?.target?.files || input || []).filter(Boolean);
+    if (!files.length) return;
+    const videoFiles = files.filter(file => this.isVideoFile(file));
+    const imageFiles = files.filter(file => !this.isVideoFile(file));
+    if (videoFiles.length > 0 && files.length > 1) {
+      alert('图片识别支持多张同时识别，视频请单独选择一个文件。');
       return;
     }
-    const isCcpd = this.isCcpdFilename(file.name);
-    await this.uploadFile('lpr', file, { forceModel: !isCcpd, ccpd: isCcpd });
+    if (videoFiles.length === 1) {
+      this.clearLprDisplay();
+      this.setLprLoading(true, { forceHide: true });
+      await this.startVideoFileStream(videoFiles[0]);
+      return;
+    }
+    if (!imageFiles.length) return;
+    this.clearLprDisplay();
+    const resultBox = document.getElementById('lpr-results');
+    if (resultBox) resultBox.innerHTML = '<div class="result-banner"><div class="result-title">正在识别多张图片，请稍候…</div></div>';
+    const batchResults = [];
+    for (const file of imageFiles) {
+      const isCcpd = this.isCcpdFilename(file.name);
+      const data = await this.uploadFile('lpr', file, {
+        forceModel: !isCcpd, ccpd: isCcpd, skipClear: true, skipAlert: true, returnData: true,
+      });
+      if (data) batchResults.push({ file, data });
+    }
+    if (batchResults.length) this.renderLprBatchResults(batchResults, 0);
   },
 
   async uploadFile(module, file, options = {}) {
     if (!file) return;
-    if (module === 'lpr') this.clearLprDisplay();
+    if (module === 'lpr' && !options.skipClear) this.clearLprDisplay();
     const isVideo = this.isVideoFile(file);
     const endpoints = { lpr: '/api/lpr/recognize', owner: '/api/owner-gesture/recognize' };
     const previewMap = { lpr: 'lpr-preview', police: 'police-preview', owner: 'owner-preview' };
@@ -430,11 +448,12 @@ const App = {
       }
       this.renderResult(module, data);
       if (module === 'owner' && data.action) this.loadVehicleState();
+      if (options.returnData) return data;
     } catch (e) {
       if (resultBox) resultBox.innerHTML = `<div class="result-banner danger"><div class="result-title">识别失败</div><div class="result-subtitle">${e.message}</div></div>`;
-      alert(e.message);
+      if (!options.skipAlert) alert(e.message);
     } finally {
-      if (module === 'lpr') this.setLprLoading(false);
+      if (module === 'lpr' && !options.skipClear) this.setLprLoading(false);
     }
   },
 
@@ -1105,17 +1124,63 @@ const App = {
     };
   },
 
+  renderLprBatchResults(batchResults, selectedIndex = 0) {
+    this.uploadedRecognitionResults = batchResults.map((item, index) => ({ index, file: item.file, data: item.data }));
+    this._batchSelectedIndex = Math.max(0, Math.min(selectedIndex, batchResults.length - 1));
+    const nav = document.getElementById('lpr-batch-nav');
+    if (nav) {
+      nav.innerHTML = batchResults.map((_, index) => `<button class="batch-chip ${index === this._batchSelectedIndex ? 'active' : ''}" data-idx="${index}">第 ${index + 1} 张</button>`).join('');
+      nav.querySelectorAll('button[data-idx]').forEach(btn => {
+        btn.onclick = () => this.renderLprBatchResult(Number(btn.dataset.idx || 0));
+      });
+      nav.hidden = batchResults.length <= 1;
+    }
+    this.renderLprBatchResult(this._batchSelectedIndex);
+  },
+
+  renderLprBatchResult(index) {
+    const item = this.uploadedRecognitionResults[index];
+    if (!item) return;
+    this._batchSelectedIndex = index;
+    const data = item.data || {};
+    const nav = document.getElementById('lpr-batch-nav');
+    nav?.querySelectorAll('button[data-idx]').forEach(btn => {
+      btn.classList.toggle('active', Number(btn.dataset.idx || 0) === index);
+    });
+    const preview = document.getElementById('lpr-preview');
+    if (preview && data.annotated_image) preview.src = `data:image/jpeg;base64,${data.annotated_image}`;
+    const resultBox = document.getElementById('lpr-image-result');
+    const plateSummary = (data.plates || []).map(p => `${this.formatPlateNumber(p.plate_number)}（${p.plate_color || '蓝牌'}）`).join('、');
+    if (resultBox) resultBox.innerHTML = `<div class="result-banner ${data.success ? 'success' : 'danger'}"><div class="result-title">第 ${index + 1} 张 · ${data.success ? '识别成功' : '未识别到有效车牌'}</div><div class="result-subtitle">${plateSummary || '无结果'}</div><div class="result-subtitle">${this.lprSourceLabel(data)}</div></div>`;
+    const hero = document.getElementById('lpr-hero');
+    const main = data.plates?.[0];
+    if (hero) hero.classList.toggle('hidden', !main);
+    if (main) {
+      document.getElementById('lpr-hero-plate').textContent = this.formatPlateNumber(main.plate_number);
+      const cls = this.plateColorClass(main.plate_color);
+      document.getElementById('lpr-hero-meta').innerHTML = `<span class="plate-badge ${cls}">${main.plate_color || '蓝牌'}</span> ${this.formatPlateNumber(main.plate_number)} · 置信度 ${((main.confidence || 0) * 100).toFixed(0)}%`;
+      const fill = hero.querySelector('.hero-conf-fill');
+      if (fill) fill.style.width = `${Math.min(100, (main.confidence || 0) * 100)}%`;
+    }
+    const plateList = document.getElementById('lpr-plates');
+    if (plateList) plateList.innerHTML = (data.plates || []).map(p => `<div class="plate-item"><span class="number">${this.formatPlateNumber(p.plate_number)}</span><span class="color ${this.plateColorClass(p.plate_color)}">${p.plate_color || '蓝牌'}</span></div>`).join('') || '<p style="color:var(--text-muted)">未检测到车牌</p>';
+  },
+
   clearLprDisplay() {
     const preview = document.getElementById('lpr-preview');
     const videoResult = document.getElementById('lpr-video-result');
     const plateTarget = document.getElementById('lpr-video-plates');
     const imgResult = document.getElementById('lpr-image-result');
     const hero = document.getElementById('lpr-hero');
+    const batchNav = document.getElementById('lpr-batch-nav');
     if (preview) preview.removeAttribute('src');
     if (videoResult) videoResult.innerHTML = '';
     if (plateTarget) plateTarget.innerHTML = '';
     if (imgResult) imgResult.innerHTML = '';
     if (hero) hero.classList.add('hidden');
+    if (batchNav) batchNav.innerHTML = '';
+    this.uploadedRecognitionResults = [];
+    this._batchSelectedIndex = 0;
   },
 
   syncLprRtspUrl() {
@@ -1134,7 +1199,7 @@ const App = {
     video.src = url;
     const update = (txt) => { if (debug) debug.textContent = txt; };
     video.onload = () => update(`已加载：${url}`);
-    video.onerror = () => update(`预览错误：${video.error?.message || video.error?.code || 'unknown'}`);
+    video.onerror = () => update(`预览错误：${video.complete ? 'stream unavailable' : 'load failed'}`);
   },
 
   async startLprRtspStream() {

@@ -91,7 +91,7 @@
             <div class="panel lpr-input-panel">
               <h3>输入源</h3>
               <div class="upload-area" id="lpr-upload">
-                <input type="file" id="lpr-file" accept="image/*,video/*" hidden>
+                <input type="file" id="lpr-file" accept="image/*,video/*" multiple hidden>
                 <div class="upload-icon">📷</div>
                 <p class="upload-title">拖拽图片或视频到此处</p>
                 <p class="upload-hint">支持 JPG / PNG / MP4，也可点击下方按钮选择</p>
@@ -129,6 +129,7 @@
               <div class="source-preview-wrap">
                 <div id="lpr-rtsp-player" class="rtsp-player hidden">
                   <div id="lpr-rtsp-debug" class="section-desc model-warn" style="margin-bottom:.5rem">预览未加载</div>
+                  <img id="lpr-rtsp-video" class="rtsp-preview-img" alt="RTSP 预览">
                 </div>
                 <video id="lpr-video-output" class="source-video" controls playsinline muted hidden></video>
                 <canvas id="lpr-canvas" hidden></canvas>
@@ -163,6 +164,7 @@
                   <span class="result-group-note">CCPD 文件名优先，普通图片回退模型识别</span>
                 </div>
                 <div id="lpr-image-result" class="results-box"></div>
+                <div id="lpr-batch-nav" class="batch-nav"></div>
                 <div id="lpr-hero" class="lpr-hero hidden">
                   <div id="lpr-hero-plate" class="hero-plate">--</div>
                   <div id="lpr-hero-meta" class="hero-meta"></div>

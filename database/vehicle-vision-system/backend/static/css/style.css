@@ -444,6 +444,35 @@ h2 {
   background: rgba(0, 0, 0, .9);
   backdrop-filter: blur(4px);
 }
+.rtsp-player .rtsp-preview-img {
+  width: 100%;
+  max-height: 220px;
+  min-height: 160px;
+  object-fit: contain;
+  display: block;
+  background: #000;
+  border-radius: 8px;
+}
+
+.batch-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .5rem;
+  margin: .75rem 0;
+}
+.batch-chip {
+  border: 1px solid var(--border);
+  background: var(--surface2);
+  color: var(--text);
+  border-radius: 999px;
+  padding: .4rem .75rem;
+  cursor: pointer;
+}
+.batch-chip.active {
+  border-color: var(--primary);
+  background: var(--primary);
+  color: #fff;
+}
 .image-viewer[hidden] { display: none; }
 .image-viewer img {
   display: block;
