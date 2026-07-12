@@ -296,10 +296,17 @@
         <section id="view-alerts" class="view">
           <h2>告警中心</h2>
           <div class="toolbar">
+            <select id="alert-filter-level" onchange="App.loadAlerts()"><option value="">全部级别</option><option value="info">提示</option><option value="warning">警告</option><option value="critical">严重</option></select>
+            <select id="alert-filter-status" onchange="App.loadAlerts()"><option value="">全部状态</option><option value="open">未处理</option><option value="resolved">已处理</option></select>
+            <select id="alert-filter-type" onchange="App.loadAlerts()"><option value="">全部事件</option></select>
             <button class="btn" onclick="App.loadAlerts()">刷新</button>
             <button class="btn" onclick="App.testAlert()">触发测试告警</button>
           </div>
           <div class="stats-grid" id="alert-stats"></div>
+          <div class="dual-panel monitor-grid">
+            <div class="panel"><h3>告警分析</h3><div id="alert-analytics"></div></div>
+            <div class="panel"><h3>智能体巡检简报</h3><div id="agent-briefing"></div><button class="btn" onclick="App.loadAgentBriefing()">刷新简报</button></div>
+          </div>
           <div class="panel">
             <h3>实时告警推送</h3>
             <div id="live-alerts" class="alert-list"></div>
@@ -308,6 +315,12 @@
             <h3>告警历史时间线</h3>
             <div id="alert-timeline" class="timeline"></div>
           </div>
+          <div class="panel">
+            <h3>告警智能助手</h3>
+            <div class="assistant-row"><input id="assistant-question" placeholder="例如：当前最紧急的告警是什么？"><button class="btn primary" onclick="App.askMonitorAssistant()">提问</button></div>
+            <div id="assistant-answer" class="assistant-answer"></div>
+          </div>
+          <div id="alert-replay" class="panel hidden"></div>
         </section>
 
         <!-- 系统日志 -->
@@ -321,9 +334,15 @@
               <option value="owner_gesture">车主手势</option>
               <option value="alert">告警</option>
               <option value="user">用户操作</option>
+              <option value="system">系统运行</option>
+              <option value="agent">智能体决策</option>
             </select>
+            <select id="log-level" onchange="App.loadLogs()"><option value="">全部级别</option><option value="INFO">INFO</option><option value="WARN">WARN</option><option value="ERROR">ERROR</option></select>
+            <input id="log-search" placeholder="关键词" onkeydown="if(event.key==='Enter')App.loadLogs()">
             <button class="btn" onclick="App.loadLogs()">刷新</button>
+            <button class="btn" id="log-stream-btn" onclick="App.toggleLogStream()">开启实时日志</button>
           </div>
+          <div id="log-stats" class="stats-grid"></div>
           <div id="log-table" class="log-table"></div>
         </section>
       </main>

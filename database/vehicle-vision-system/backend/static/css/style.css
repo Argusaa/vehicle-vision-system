@@ -193,6 +193,13 @@ h2 {
 .standby-clock { font-size: clamp(4rem,13vw,9rem); font-weight: 800; letter-spacing: .08em; }
 .standby-date { margin-top: .5rem; color: var(--text-muted); font-size: 1.3rem; }
 .standby-tip { margin: 1.5rem 0; color: var(--primary); }
+.monitor-grid { margin-bottom: 1rem; }
+.toolbar input { min-width: 180px; }
+.assistant-row { display: flex; gap: .75rem; }
+.assistant-row input { flex: 1; }
+.assistant-answer { margin-top: 1rem; white-space: pre-wrap; line-height: 1.6; color: var(--text-muted); }
+#alert-replay pre { white-space: pre-wrap; max-height: 420px; overflow: auto; }
+.timeline-item { cursor: pointer; }
 
 .history-list { max-height: 200px; overflow-y: auto; }
 .history-item {

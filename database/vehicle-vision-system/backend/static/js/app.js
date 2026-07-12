@@ -6,6 +6,8 @@ const App = {
   streamTimeout: null,
   wsAlerts: null,
   wsStream: null,
+  alertSse: null,
+  logSse: null,
   lprVideoWs: null,
   lprVideoBusy: false,
   lprVideoTimer: null,
@@ -177,8 +179,8 @@ const App = {
     if (view === 'lpr') { this.loadLprHistory(); this.loadLprModelStatus(); }
     if (view === 'police') { this.loadPolicePoseBackend(); this.loadPoliceGestures(); this.loadPoliceHistory(); }
     if (view === 'owner') { this.loadOwnerGestures(); this.loadVehicleState(); }
-    if (view === 'alerts') { this.loadAlerts(); this.connectAlertWs(); }
-    if (view === 'logs') this.loadLogs();
+    if (view === 'alerts') { this.loadAlertTypes(); this.loadAlerts(); this.loadAgentBriefing(); this.connectAlertSse(); }
+    if (view === 'logs') { this.loadLogs(); this.loadLogStats(); }
   },
 
   async login() {
@@ -1633,23 +1635,84 @@ const App = {
 
   async loadAlerts() {
     try {
-      const [stats, alerts] = await Promise.all([
+      const params = new URLSearchParams({ limit: '50' });
+      const level = document.getElementById('alert-filter-level')?.value;
+      const status = document.getElementById('alert-filter-status')?.value;
+      const eventType = document.getElementById('alert-filter-type')?.value;
+      if (level) params.set('level', level);
+      if (status) params.set('status', status);
+      if (eventType) params.set('event_type', eventType);
+      const [stats, alerts, analytics] = await Promise.all([
         this.api('/api/monitor/alerts/stats'),
-        this.api('/api/monitor/alerts?limit=30'),
+        this.api('/api/monitor/alerts?' + params.toString()),
+        this.api('/api/monitor/alerts/analytics?days=7'),
       ]);
-      document.getElementById('alert-stats').innerHTML = Object.entries(stats.by_level || {}).map(([k, v]) =>
-        `<div class="stat-card"><div class="stat-num">${v}</div><div class="stat-label">${k}</div></div>`
-      ).join('');
+      document.getElementById('alert-stats').innerHTML = [
+        ['总数', stats.total || 0], ['今日', stats.today_count || 0], ['未处理', stats.open || 0], ['处理率', `${Math.round(stats.resolution_rate || 0)}%`],
+      ].map(([label, value]) => `<div class="stat-card"><div class="stat-num">${value}</div><div class="stat-label">${label}</div></div>`).join('');
+      document.getElementById('alert-analytics').innerHTML = `<p>近 7 天告警：${analytics.total || 0}</p><p>平均处理时间：${analytics.mttr_minutes ?? '--'} 分钟</p><p>主要类型：${(analytics.by_type_ranked || []).slice(0, 3).map(x => `${x.name || x.event_type} ${x.count}`).join('、') || '暂无'}</p>`;
       document.getElementById('alert-timeline').innerHTML = alerts.map(a =>
-        `<div class="timeline-item ${a.level}"><strong>${a.title}</strong><br>${a.summary}<br><small>${new Date(a.created_at).toLocaleString()}</small>${a.suggestion ? '<br><em>建议: ' + a.suggestion + '</em>' : ''}</div>`
+        `<div class="timeline-item ${a.level}" onclick="App.viewAlertReplay(${a.id})"><strong>${a.title}</strong><br>${a.summary}<br><small>${new Date(a.created_at).toLocaleString()} · ${a.status === 'resolved' ? '已处理' : '未处理'}</small>${a.suggestion ? '<br><em>建议: ' + a.suggestion + '</em>' : ''}${a.status !== 'resolved' ? `<br><button class="btn" onclick="event.stopPropagation();App.resolveAlert(${a.id})">标记已处理</button>` : ''}</div>`
       ).join('') || '<p>暂无告警</p>';
     } catch (e) {}
+  },
+
+  async loadAlertTypes() {
+    try {
+      const types = await this.api('/api/monitor/alerts/event-types');
+      const select = document.getElementById('alert-filter-type');
+      const current = select?.value || '';
+      if (select) select.innerHTML = '<option value="">全部事件</option>' + types.map(t => `<option value="${t.key}">${t.name}</option>`).join('');
+      if (select) select.value = current;
+    } catch (e) {}
+  },
+
+  connectAlertSse() {
+    if (this.alertSse) return;
+    this.alertSse = new EventSource('/api/monitor/stream');
+    this.alertSse.onmessage = event => {
+      const data = JSON.parse(event.data || '{}');
+      if (data.type === 'alert') { this.showToast(data); this.loadAlerts(); }
+    };
+    this.alertSse.onerror = () => { this.alertSse?.close(); this.alertSse = null; };
+  },
+
+  async resolveAlert(id) {
+    await this.api(`/api/monitor/alerts/${id}/resolve`, { method: 'POST', body: JSON.stringify({ resolution_note: 'Web 页面手动处理' }) });
+    this.loadAlerts();
+  },
+
+  async viewAlertReplay(id) {
+    try {
+      const data = await this.api(`/api/monitor/alerts/${id}/replay`);
+      const box = document.getElementById('alert-replay');
+      box.classList.remove('hidden');
+      box.innerHTML = `<h3>告警回放 #${id}</h3><p>${data.cause_analysis?.primary_cause || ''}</p><pre>${JSON.stringify(data.timeline_events || data, null, 2)}</pre><button class="btn" onclick="this.parentElement.classList.add('hidden')">关闭</button>`;
+    } catch (e) { alert(e.message); }
+  },
+
+  async loadAgentBriefing() {
+    try {
+      const data = await this.api('/api/monitor/agent/briefing');
+      document.getElementById('agent-briefing').textContent = data.briefing || data.summary || JSON.stringify(data);
+    } catch (e) {}
+  },
+
+  async askMonitorAssistant() {
+    const input = document.getElementById('assistant-question');
+    const output = document.getElementById('assistant-answer');
+    if (!input?.value.trim()) return;
+    output.textContent = '分析中…';
+    try {
+      const data = await this.api('/api/monitor/assistant', { method: 'POST', body: JSON.stringify({ question: input.value.trim() }) });
+      output.textContent = data.answer || JSON.stringify(data);
+    } catch (e) { output.textContent = e.message; }
   },
 
   async testAlert() {
     try {
       const data = await this.api('/api/monitor/alerts/test', { method: 'POST' });
-      this.showToast({ level: 'info', title: data.title, summary: data.summary });
+      this.showToast({ level: data.level || 'info', title: data.title, summary: data.summary });
       this.loadAlerts();
     } catch (e) { alert(e.message); }
   },
@@ -1668,8 +1731,14 @@ const App = {
 
   async loadLogs() {
     const cat = document.getElementById('log-category')?.value || '';
+    const level = document.getElementById('log-level')?.value || '';
+    const search = document.getElementById('log-search')?.value.trim() || '';
     try {
-      const data = await this.api('/api/monitor/logs?limit=50' + (cat ? '&category=' + cat : ''));
+      const params = new URLSearchParams({ limit: '100' });
+      if (cat) params.set('category', cat);
+      if (level) params.set('level', level);
+      if (search) params.set('search', search);
+      const data = await this.api('/api/monitor/logs?' + params.toString());
       document.getElementById('log-table').innerHTML =
         '<div class="log-row header"><span>时间</span><span>级别</span><span>类别</span><span>消息</span></div>' +
         data.map(l =>
@@ -1678,6 +1747,28 @@ const App = {
     } catch (e) {
       document.getElementById('log-table').innerHTML = `<p>加载日志失败: ${e.message}</p>`;
     }
+  },
+
+  async loadLogStats() {
+    try {
+      const data = await this.api('/api/monitor/logs/stats?hours=24');
+      const rows = [['24h 总数', data.total || 0], ...Object.entries(data.by_level || {})];
+      document.getElementById('log-stats').innerHTML = rows.map(([label, value]) => `<div class="stat-card"><div class="stat-num">${value}</div><div class="stat-label">${label}</div></div>`).join('');
+    } catch (e) {}
+  },
+
+  toggleLogStream() {
+    const button = document.getElementById('log-stream-btn');
+    if (this.logSse) {
+      this.logSse.close();
+      this.logSse = null;
+      if (button) button.textContent = '开启实时日志';
+      return;
+    }
+    this.logSse = new EventSource('/api/monitor/logs/stream');
+    this.logSse.onmessage = () => { this.loadLogs(); this.loadLogStats(); };
+    this.logSse.onerror = () => { this.logSse?.close(); this.logSse = null; if (button) button.textContent = '开启实时日志'; };
+    if (button) button.textContent = '停止实时日志';
   },
 };
 

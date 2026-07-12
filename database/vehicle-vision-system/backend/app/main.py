@@ -10,11 +10,33 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from fastapi.responses import RedirectResponse
 from app.config import settings
-from app.database import init_db
+from app.database import init_db, check_db_connection
 from app.models.user import User
 from app.database import SessionLocal
 from app.utils.auth import hash_password
 from app.routers import auth, lpr, police_gesture, owner_gesture, monitor, websocket
+from app.services.alert_agent import alert_agent
+from app.services.llm_service import llm_service
+from app.utils.logger import get_logger, write_log, write_system_log
+
+main_logger = get_logger("main")
+
+
+async def _startup_checks(db):
+    write_system_log(db, "系统启动完成", detail={"version": "1.0.0"})
+    db_ok = check_db_connection()
+    alert_agent.record_db_connection(db_ok)
+    if not db_ok:
+        await alert_agent.check_and_alert(db, "db")
+    if settings.alert_webhook_enabled and not settings.webhook_url:
+        await alert_agent.handle_config_missing(db, "webhook_url", severity="warning")
+    if settings.alert_email_enabled and not all((settings.smtp_host, settings.smtp_user, settings.alert_email_to)):
+        await alert_agent.handle_config_missing(db, "smtp/email", severity="warning")
+    if not settings.llm_configured:
+        write_system_log(db, "LLM 未配置，告警摘要使用本地模板", level="WARN")
+    else:
+        status = await llm_service.test_connection()
+        write_system_log(db, "LLM 连接正常" if status.get("ok") else "LLM 连接失败，使用模板降级", level="INFO" if status.get("ok") else "WARN", detail=status)
 
 
 @asynccontextmanager
@@ -36,8 +58,10 @@ async def lifespan(app: FastAPI):
                 )
             )
             db.commit()
+        await _startup_checks(db)
     finally:
         db.close()
+    await alert_agent.start_patrol_loop(SessionLocal)
     yield
 
 
@@ -92,6 +116,14 @@ async def index():
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     response = await call_next(request)
-    if response.status_code == 401 and request.url.path.startswith("/api/") and "auth" not in request.url.path:
-        pass
+    if response.status_code in {401, 403} and request.url.path.startswith("/api/"):
+        db = SessionLocal()
+        try:
+            client_ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or (request.client.host if request.client else "unknown")
+            await alert_agent.handle_unauthorized_access(db, request.url.path, ip=client_ip, user_agent=request.headers.get("user-agent"))
+            write_log(db, "user", f"未授权访问: {request.url.path}", level="WARN", detail={"ip": client_ip, "status": response.status_code})
+        except Exception as exc:
+            main_logger.warning("未授权访问检测失败: %s", exc)
+        finally:
+            db.close()
     return response
