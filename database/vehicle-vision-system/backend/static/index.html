@@ -271,7 +271,13 @@
                 <h3>🚗 模拟车辆控制面板</h3>
                 <div class="vehicle-control">
                   <label>系统状态: <span id="v-awake">休眠</span></label>
-                  <label>当前页面: <span id="v-page">home</span></label>
+                  <label>当前选择: <span id="v-page">volume_up</span></label>
+                  <div class="function-selector" id="owner-function-selector">
+                    <div class="function-card" data-control="volume_up"><strong>音量 +</strong><small>握拳确认增加音量</small></div>
+                    <div class="function-card" data-control="volume_down"><strong>音量 -</strong><small>握拳确认降低音量</small></div>
+                    <div class="function-card" data-control="temp_up"><strong>温度 +</strong><small>握拳确认升高温度</small></div>
+                    <div class="function-card" data-control="temp_down"><strong>温度 -</strong><small>握拳确认降低温度</small></div>
+                  </div>
                   <label>音量: <input type="range" id="v-volume" min="0" max="100" value="50" onchange="App.updateVehicle()"> <span id="v-volume-val">50</span></label>
                   <label>空调温度: <input type="range" id="v-temp" min="16" max="32" value="24" onchange="App.updateVehicle()"> <span id="v-temp-val">24</span>°C</label>
                   <div class="phone-btns">
@@ -279,6 +285,7 @@
                     <button class="btn" id="v-hangup" onclick="App.setPhone('idle')">📵 挂断</button>
                     <span id="v-phone">空闲</span>
                   </div>
+                  <div class="gesture-hints">手掌张开唤醒；左/右指移动选择；握拳确认；画圈调整；点赞/倒赞接听/挂断；挥手返回待机。</div>
                 </div>
               </div>
             </div>
@@ -329,6 +336,12 @@
     </div>
 
     <!-- 告警 Toast -->
+    <div id="standby-page" class="standby-page" hidden>
+      <div class="standby-clock" id="standby-clock">--:--</div>
+      <div class="standby-date" id="standby-date">车主手势待机</div>
+      <div class="standby-tip">挥手已返回主页 / 待机模式</div>
+      <button class="btn primary" onclick="App.exitStandby()">返回车主手势控车</button>
+    </div>
     <div id="toast-container"></div>
   </div>
   <script src="/static/js/app.js"></script>

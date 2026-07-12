@@ -736,8 +736,14 @@ const App = {
       document.getElementById('police-result').innerHTML = `${data.gesture_cn}<br><small>置信度 ${(data.confidence*100).toFixed(0)}%</small>`;
       this.loadPoliceHistory();
     } else if (module === 'owner') {
-      document.getElementById('owner-preview').src = 'data:image/jpeg;base64,' + data.annotated_image;
-      document.getElementById('owner-result').innerHTML = `${data.gesture_cn}${data.action ? '<br><small>→ ' + data.action + '</small>' : ''}`;
+      if (data.annotated_image) document.getElementById('owner-preview').src = 'data:image/jpeg;base64,' + data.annotated_image;
+      const confidence = Math.round((data.confidence || 0) * 100);
+      document.getElementById('owner-result').innerHTML = `<div class="gesture-name">${data.gesture_cn}</div><small>置信度 ${confidence}%</small>${data.action ? '<div class="action-tag">→ ' + data.action + '</div>' : ''}`;
+      if (data.confirmation_resolved) this.hideGestureConfirm();
+      if (data.needs_confirmation) this.showGestureConfirm(data.confirm_prompt);
+      if (data.vehicle_state) this.applyVehicleState(data.vehicle_state);
+      else if (data.action === 'go_home') this.showStandby();
+      else if (data.action) this.loadVehicleState();
     }
   },
 
@@ -882,16 +888,79 @@ const App = {
     } catch (e) {}
   },
 
+  showGestureConfirm(prompt) {
+    let box = document.getElementById('gesture-confirm');
+    if (!box) {
+      box = document.createElement('div');
+      box.id = 'gesture-confirm';
+      box.className = 'gesture-confirm';
+      document.body.appendChild(box);
+    }
+    box.innerHTML = `<div class="gc-card"><div class="gc-msg">${prompt || '检测到低置信度手势，是否确认执行？'}</div><div class="gc-btns"><button class="btn primary" id="gc-yes">确认</button><button class="btn" id="gc-no">取消</button></div></div>`;
+    box.style.display = 'flex';
+    document.getElementById('gc-yes').onclick = () => this.respondGestureConfirm(true);
+    document.getElementById('gc-no').onclick = () => this.respondGestureConfirm(false);
+  },
+
+  hideGestureConfirm() {
+    const box = document.getElementById('gesture-confirm');
+    if (box) box.style.display = 'none';
+  },
+
+  async respondGestureConfirm(accept) {
+    if (this.wsStream?.readyState === WebSocket.OPEN && this.streamModule === 'owner') {
+      this.wsStream.send(JSON.stringify({ type: 'confirm', accept }));
+    } else {
+      const result = await this.api(`/api/owner-gesture/confirm?accept=${accept}`, { method: 'POST' });
+      if (result.vehicle_state) this.applyVehicleState(result.vehicle_state);
+    }
+    this.hideGestureConfirm();
+  },
+
+  applyVehicleState(s) {
+    document.getElementById('v-awake').textContent = s.is_awake ? '已唤醒' : '休眠';
+    this.ownerCurrentControl = s.current_page || 'volume_up';
+    const names = { volume_up: '音量 +', volume_down: '音量 -', temp_up: '温度 +', temp_down: '温度 -', standby: '待机主页' };
+    document.getElementById('v-page').textContent = names[s.current_page] || s.current_page;
+    document.getElementById('v-volume').value = s.volume;
+    document.getElementById('v-volume-val').textContent = s.volume;
+    document.getElementById('v-temp').value = s.temperature;
+    document.getElementById('v-temp-val').textContent = s.temperature;
+    document.getElementById('v-phone').textContent = s.phone_status === 'in_call' ? '通话中' : '空闲';
+    document.querySelectorAll('#owner-function-selector .function-card').forEach(card => card.classList.toggle('active', card.dataset.control === s.current_page));
+    if (s.current_page === 'standby' && !s.is_awake) this.showStandby(); else this.hideStandby();
+  },
+
+  showStandby() {
+    const page = document.getElementById('standby-page');
+    if (!page) return;
+    const update = () => {
+      const now = new Date();
+      document.getElementById('standby-clock').textContent = now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+      document.getElementById('standby-date').textContent = now.toLocaleDateString('zh-CN', { weekday: 'long', month: 'long', day: 'numeric' });
+    };
+    update();
+    page.hidden = false;
+    this._standbyTimer = this._standbyTimer || setInterval(update, 1000);
+  },
+
+  hideStandby() {
+    const page = document.getElementById('standby-page');
+    if (page) page.hidden = true;
+  },
+
+  exitStandby() {
+    this.hideStandby();
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+    document.querySelector('.nav-item[data-view="owner"]')?.classList.add('active');
+    document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+    document.getElementById('view-owner')?.classList.add('active');
+  },
+
   async loadVehicleState() {
     try {
       const s = await this.api('/api/owner-gesture/vehicle-state');
-      document.getElementById('v-awake').textContent = s.is_awake ? '已唤醒' : '休眠';
-      document.getElementById('v-page').textContent = s.current_page;
-      document.getElementById('v-volume').value = s.volume;
-      document.getElementById('v-volume-val').textContent = s.volume;
-      document.getElementById('v-temp').value = s.temperature;
-      document.getElementById('v-temp-val').textContent = s.temperature;
-      document.getElementById('v-phone').textContent = s.phone_status === 'in_call' ? '通话中' : '空闲';
+      this.applyVehicleState(s);
     } catch (e) {}
   },
 
@@ -900,7 +969,7 @@ const App = {
       volume: +document.getElementById('v-volume').value,
       temperature: +document.getElementById('v-temp').value,
       phone_status: document.getElementById('v-phone').textContent === '通话中' ? 'in_call' : 'idle',
-      current_page: document.getElementById('v-page').textContent,
+      current_page: this.ownerCurrentControl || 'volume_up',
       is_awake: document.getElementById('v-awake').textContent === '已唤醒' ? 1 : 0,
     };
     document.getElementById('v-volume-val').textContent = data.volume;
@@ -1039,13 +1108,20 @@ const App = {
       if (statusEl) statusEl.textContent = '摄像头已打开，等待识别结果…';
 
       const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-      this.wsStream = new WebSocket(`${proto}://${location.host}/ws/stream/${module}`);
+      const wsUrl = module === 'owner'
+        ? `${proto}://${location.host}/api/owner-gesture/ws-stream?token=${encodeURIComponent(this.token || '')}`
+        : `${proto}://${location.host}/ws/stream/${module}`;
+      this.wsStream = new WebSocket(wsUrl);
       this.wsStream.onmessage = (e) => {
         const msg = JSON.parse(e.data);
         this.streamBusy = false;
         if (msg.type === 'result') {
           this.renderResult(module, msg.data);
           if (module === 'police') this.savePoliceHistoryRecord(msg.data, 'camera');
+        }
+        if (msg.type === 'confirmed') {
+          if (msg.data?.vehicle_state) this.applyVehicleState(msg.data.vehicle_state);
+          this.hideGestureConfirm();
         }
         if (msg.type === 'frame_error') {
           const resultMap = { police: 'police-result', owner: 'owner-result' };

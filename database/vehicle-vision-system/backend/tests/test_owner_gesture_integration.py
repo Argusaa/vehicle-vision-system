@@ -1,0 +1,69 @@
+from pathlib import Path
+
+from app.routers.owner_gesture import router as owner_router
+from app.services.owner_gesture_service import (
+    OWNER_GESTURES,
+    OwnerGestureService,
+)
+
+
+STATIC_DIR = Path(__file__).resolve().parents[1] / "static"
+
+
+def _service_without_models() -> OwnerGestureService:
+    service = OwnerGestureService.__new__(OwnerGestureService)
+    service._pending_confirm = None
+    service._last_emitted = "no_gesture"
+    service._last_action_time = 0.0
+    return service
+
+
+def test_owner_gesture_mapping_covers_eight_actions():
+    gestures = {key for key in OWNER_GESTURES if key != "no_gesture"}
+    assert gestures == {
+        "palm_open", "fist", "circle", "point_left", "point_right",
+        "thumb_up", "thumb_down", "wave",
+    }
+
+
+def test_vehicle_state_machine_wake_select_confirm_and_standby():
+    service = _service_without_models()
+    state = {"volume": 50, "temperature": 24, "phone_status": "idle", "current_page": "standby", "is_awake": 0}
+
+    assert service.apply_action_to_state("wake", state)["current_page"] == "volume_up"
+    assert state["is_awake"] == 1
+    service.apply_action_to_state("next_page", state)
+    assert state["current_page"] == "volume_down"
+    service.apply_action_to_state("confirm", state)
+    assert state["volume"] == 45
+    service.apply_action_to_state("answer_call", state)
+    assert state["phone_status"] == "in_call"
+    service.apply_action_to_state("go_home", state)
+    assert state["current_page"] == "standby"
+    assert state["is_awake"] == 0
+
+
+def test_low_confidence_confirm_is_deferred_and_can_be_accepted():
+    service = _service_without_models()
+    action, pending = service._maybe_defer_for_confirmation("fist", 0.8, "confirm")
+    assert action is None
+    assert pending is True
+    assert service.has_pending_confirm()
+    accepted = service.confirm_pending(True)
+    assert accepted["gesture"] == "fist"
+    assert accepted["action"] == "confirm"
+    assert not service.has_pending_confirm()
+
+
+def test_owner_public_routes_and_frontend_contract_are_present():
+    paths = {route.path for route in owner_router.routes if hasattr(route, "path")}
+    assert "/api/owner-gesture/recognize-video" in paths
+    assert "/api/owner-gesture/confirm" in paths
+    assert "/api/owner-gesture/ws-stream" in paths
+
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    js = (STATIC_DIR / "js" / "app.js").read_text(encoding="utf-8")
+    assert 'id="owner-function-selector"' in html
+    assert 'id="standby-page"' in html
+    assert "/api/owner-gesture/ws-stream" in js
+    assert "showGestureConfirm(prompt)" in js
