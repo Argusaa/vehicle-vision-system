@@ -1018,12 +1018,20 @@ const App = {
     const current = select.value;
     const devices = await navigator.mediaDevices.enumerateDevices().catch(() => []);
     const cameras = devices.filter(d => d.kind === 'videoinput');
-    select.innerHTML = '<option value="">默认摄像头</option>' + cameras.map((d, i) =>
+    const automaticLabel = module === 'owner' ? '自动选择（优先笔记本前置摄像头）' : '默认摄像头';
+    select.innerHTML = `<option value="">${automaticLabel}</option>` + cameras.map((d, i) =>
       `<option value="${d.deviceId}">${d.label || `摄像头 ${i + 1}`}</option>`
     ).join('');
     if (current && cameras.some(d => d.deviceId === current)) select.value = current;
     if (status) status.textContent = cameras.length ? `检测到 ${cameras.length} 个摄像头` : '未检测到可用摄像头';
     return cameras;
+  },
+
+  cameraDevicePriority(device) {
+    const label = (device?.label || '').toLowerCase();
+    if (/integrated|built[- ]?in|front|user|facetime|内置|前置/.test(label)) return 0;
+    if (/virtual|obs|manycam|snap camera|droidcam|iriun|虚拟/.test(label)) return 2;
+    return 1;
   },
 
   async ensurePoliceCameraSelector() {
@@ -1060,21 +1068,45 @@ const App = {
       throw new Error('当前浏览器不支持 getUserMedia 摄像头接口');
     }
     await this.ensureCameraSelector(module);
-    const selectedDevice = document.getElementById(`${module}-camera-device`)?.value || '';
+    const select = document.getElementById(`${module}-camera-device`);
+    const status = document.getElementById(`${module}-camera-status`);
+    const selectedDevice = select?.value || '';
+    const devices = await navigator.mediaDevices.enumerateDevices().catch(() => []);
+    const cameras = devices
+      .filter(device => device.kind === 'videoinput' && device.deviceId)
+      .sort((left, right) => this.cameraDevicePriority(left) - this.cameraDevicePriority(right));
     const baseVideo = {
       width: { ideal: 640 },
       height: { ideal: 480 },
       frameRate: { ideal: 15, max: 15 },
     };
     const attempts = [];
-    if (selectedDevice) attempts.push({ video: { ...baseVideo, deviceId: { exact: selectedDevice } }, audio: false });
+    const orderedDeviceIds = [
+      ...(selectedDevice ? [selectedDevice] : []),
+      ...cameras.map(device => device.deviceId).filter(deviceId => deviceId !== selectedDevice),
+    ];
+    for (const deviceId of orderedDeviceIds) {
+      // First avoid all resolution/FPS constraints: many laptop cameras reject
+      // constrained startup even though they can provide frames normally.
+      attempts.push({ video: { deviceId: { exact: deviceId } }, audio: false });
+      attempts.push({ video: { ...baseVideo, deviceId: { exact: deviceId } }, audio: false });
+    }
+    attempts.push({ video: { ...baseVideo, facingMode: { ideal: 'user' } }, audio: false });
     attempts.push({ video: baseVideo, audio: false });
     attempts.push({ video: true, audio: false });
 
     let lastError = null;
     for (const constraints of attempts) {
       try {
-        return await navigator.mediaDevices.getUserMedia(constraints);
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        const activeTrack = stream.getVideoTracks()[0];
+        const activeDeviceId = activeTrack?.getSettings?.().deviceId || '';
+        const activeCamera = cameras.find(device => device.deviceId === activeDeviceId);
+        if (select && activeDeviceId && [...select.options].some(option => option.value === activeDeviceId)) {
+          select.value = activeDeviceId;
+        }
+        if (status) status.textContent = `已连接：${activeTrack?.label || activeCamera?.label || '摄像头'}`;
+        return stream;
       } catch (error) {
         lastError = error;
       }

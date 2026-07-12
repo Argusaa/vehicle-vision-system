@@ -70,4 +70,6 @@ def test_owner_public_routes_and_frontend_contract_are_present():
     assert "/api/owner-gesture/ws-stream" in js
     assert "openCameraStream(module)" in js
     assert "refreshCameraDevices(module)" in js
+    assert "cameraDevicePriority(device)" in js
+    assert "自动选择（优先笔记本前置摄像头）" in html
     assert "showGestureConfirm(prompt)" in js
