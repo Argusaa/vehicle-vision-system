@@ -199,7 +199,7 @@ class LprVideoService:
             b'Content-Type: image/jpeg\r\n\r\n' + buf.tobytes() + b'\r\n'
         )
 
-    def _make_rtsp_worker(self, rtsp_url: str, source_name: str, stop_event: threading.Event, proc, state: dict[str, Any]):
+    def _make_rtsp_worker(self, rtsp_url: str, source_name: str, stop_event: threading.Event, state: dict[str, Any]):
         def worker():
             cap2 = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
             cap2.set(cv2.CAP_PROP_BUFFERSIZE, 1)
@@ -207,9 +207,6 @@ class LprVideoService:
             logger.info("[LPR-RTSP] worker started input=%s source=%s", rtsp_url, source_name)
             try:
                 while not stop_event.is_set():
-                    if proc.poll() is not None:
-                        logger.error("[LPR-RTSP] ffmpeg exited early code=%s", proc.returncode)
-                        break
                     ok, frame = cap2.read()
                     if not ok:
                         logger.info("[LPR-RTSP] frame read failed, retrying...")
@@ -243,37 +240,8 @@ class LprVideoService:
                         agg["hit_count"] += 1
                         agg["max_confidence"] = max(agg["max_confidence"], confidence)
                         agg["frames"].append(frame_index)
-                    fused_map = state.setdefault("fused_map", {})
-                    for p in result.get("plates", []):
-                        plate_number = (p.get("plate_number") or "").strip()
-                        confidence = float(p.get("confidence", 0.0))
-                        if not plate_number:
-                            continue
-                        key = (plate_number, p.get("plate_color", "蓝牌"))
-                        agg = fused_map.setdefault(key, {
-                            "plate_number": plate_number,
-                            "plate_color": p.get("plate_color", "蓝牌"),
-                            "confidence_sum": 0.0,
-                            "hit_count": 0,
-                            "max_confidence": 0.0,
-                            "frames": [],
-                            "source": "yolo_lprnet",
-                        })
-                        agg["confidence_sum"] += confidence
-                        agg["hit_count"] += 1
-                        agg["max_confidence"] = max(agg["max_confidence"], confidence)
-                        agg["frames"].append(frame_index)
             finally:
                 cap2.release()
-                try:
-                    if proc.stdin:
-                        proc.stdin.close()
-                except Exception:
-                    pass
-                try:
-                    proc.terminate()
-                except Exception:
-                    pass
                 with self._stream_lock:
                     state["running"] = False
         return worker
@@ -298,22 +266,13 @@ class LprVideoService:
             fps = int(cap.get(cv2.CAP_PROP_FPS) or 25)
             cap.release()
 
-            dst_url = f"rtsp://127.0.0.1:8554/{source_name}"
-            command = self._build_ffmpeg_command(width, height, fps, dst_url)
-            logger.info("[LPR-RTSP] launch input=%s dst=%s size=%sx%s fps=%s cmd=%s", rtsp_url, dst_url, width, height, fps, command)
-            proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=False)
-            try:
-                stderr_preview = proc.stderr.readline().decode(errors='ignore').strip() if proc.stderr else ''
-                if stderr_preview:
-                    logger.info("[LPR-RTSP] ffmpeg first stderr: %s", stderr_preview)
-            except Exception as exc:
-                logger.warning("[LPR-RTSP] unable to read ffmpeg stderr preview: %s", exc)
+            logger.info("[LPR-RTSP] launch direct input=%s size=%sx%s fps=%s", rtsp_url, width, height, fps)
             meta = {
                 "success": True,
                 "source": "yolo_lprnet",
                 "model_available": True,
                 "rtsp_url": rtsp_url,
-                "dst_url": dst_url,
+                "dst_url": None,
                 "source_name": source_name,
                 "label": label,
                 "message": f"RTSP 识别任务已启动：{label or source_name}",
@@ -326,8 +285,8 @@ class LprVideoService:
             }
 
             stop_event = threading.Event()
-            state = {"running": True, "proc": proc, "thread": None, "stop_event": stop_event, "meta": meta, "latest": None, "rtsp_url": rtsp_url, "source_name": source_name, "latest_frame": None, "frame_index": 0, "last_update": None, "fused_map": {}}
-            worker = self._make_rtsp_worker(rtsp_url, source_name, stop_event, proc, state)
+            state = {"running": True, "proc": None, "thread": None, "stop_event": stop_event, "meta": meta, "latest": None, "rtsp_url": rtsp_url, "source_name": source_name, "latest_frame": None, "frame_index": 0, "last_update": None, "fused_map": {}}
+            worker = self._make_rtsp_worker(rtsp_url, source_name, stop_event, state)
             thread = threading.Thread(target=worker, daemon=True)
             state["thread"] = thread
             self._stream_jobs[rtsp_url] = state
