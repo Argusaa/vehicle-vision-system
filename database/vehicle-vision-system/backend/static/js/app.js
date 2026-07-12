@@ -492,6 +492,19 @@ const App = {
     }
   },
 
+  ownerActionLabel(action) {
+    return {
+      wake: '唤醒系统',
+      confirm: '确认当前功能',
+      volume_adjust: '调节当前选中项',
+      prev_page: '选择上一个功能',
+      next_page: '选择下一个功能',
+      answer_call: '接听电话',
+      hang_up: '挂断电话',
+      go_home: '返回待机主页',
+    }[action] || action || '-';
+  },
+
   showPoliceUploadPreview(file, isVideo) {
     const imagePreview = document.getElementById('police-preview');
     const videoPreview = document.getElementById('police-upload-preview');
@@ -789,7 +802,7 @@ const App = {
             <div class="gesture-name">${data.gesture_cn}</div>
             <div class="conf-bar-wrap"><div class="conf-bar" style="width:${confidence}%;background:${color}"></div></div>
             <div class="conf-text">置信度 ${confidence}% · ${shouldHold ? '短暂停留 1.2 秒' : '实时显示'}</div>
-            ${data.action ? `<div class="action-tag">→ ${data.action}</div>` : ''}`;
+            ${data.action ? `<div class="action-tag">→ ${this.ownerActionLabel(data.action)}</div>` : ''}`;
           resultBox.innerHTML = this.ownerLastGestureHtml;
         } else if (now < this.ownerLastGestureUntil && this.ownerLastGestureHtml) {
           resultBox.innerHTML = this.ownerLastGestureHtml;
@@ -942,7 +955,7 @@ const App = {
     try {
       const data = await this.api('/api/owner-gesture/gestures');
       document.getElementById('owner-gestures').innerHTML = data.map(g =>
-        `<span class="gesture-tag">${g.cn} → ${g.action || '-'}</span>`
+        `<span class="gesture-tag">${g.cn} → ${this.ownerActionLabel(g.action)}</span>`
       ).join('');
     } catch (e) {}
   },

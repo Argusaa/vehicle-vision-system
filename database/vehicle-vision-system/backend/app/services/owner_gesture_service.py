@@ -67,7 +67,9 @@ HAND_CONNECTIONS = [
 class OwnerGestureService:
     """车主手势控车: MediaPipe Hand Landmarker + 启发式规则 + 持续时间/复合确认防抖"""
 
-    MIRROR_POINT_DIRECTIONS = True
+    # 浏览器预览和上传到后端的画面都未做水平翻转，直接采用图像坐标方向。
+    # 若此处再次镜像，会造成“向左指识别为向右指”。
+    MIRROR_POINT_DIRECTIONS = False
     REALTIME_DYNAMIC_WINDOW_SEC = 1.0
     REALTIME_DYNAMIC_MIN_SCORE = {
         "wave": 1.05,
