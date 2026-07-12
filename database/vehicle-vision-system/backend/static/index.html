@@ -257,6 +257,13 @@
           <div class="dual-panel">
             <div class="panel">
               <input type="file" id="owner-file" accept="image/*,video/*" hidden>
+              <div class="camera-device-row owner-camera-row" id="owner-camera-row">
+                <select id="owner-camera-device" aria-label="车主手势摄像头">
+                  <option value="">默认摄像头</option>
+                </select>
+                <button class="btn" type="button" onclick="App.refreshCameraDevices('owner')">刷新摄像头</button>
+                <span id="owner-camera-status" class="camera-status">尚未检测摄像头</span>
+              </div>
               <button class="btn" onclick="document.getElementById('owner-file').click()">上传图片/视频</button>
               <button class="btn primary" onclick="App.startStream('owner')">📹 实时手势控制</button>
               <button class="btn" onclick="App.stopStream()">停止</button>

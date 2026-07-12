@@ -127,6 +127,15 @@ h2 {
 .dual-panel { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
 @media (max-width: 900px) { .dual-panel { grid-template-columns: 1fr; } }
 
+.camera-device-row {
+  display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; margin-bottom: .75rem;
+}
+.camera-device-row select {
+  flex: 1 1 180px; min-width: 0; min-height: 40px; padding: .55rem .7rem;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text);
+}
+.camera-status { flex: 1 1 100%; color: var(--text-muted); font-size: .8rem; }
+
 .upload-area {
   border: 2px dashed var(--border); border-radius: var(--radius);
   padding: 2rem; text-align: center; margin-bottom: 1rem; cursor: pointer;

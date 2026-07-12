@@ -177,8 +177,8 @@ const App = {
   onViewChange(view) {
     if (view === 'dashboard') this.loadDashboard();
     if (view === 'lpr') { this.loadLprHistory(); this.loadLprModelStatus(); }
-    if (view === 'police') { this.loadPolicePoseBackend(); this.loadPoliceGestures(); this.loadPoliceHistory(); }
-    if (view === 'owner') { this.loadOwnerGestures(); this.loadVehicleState(); }
+    if (view === 'police') { this.loadPolicePoseBackend(); this.loadPoliceGestures(); this.loadPoliceHistory(); this.ensureCameraSelector('police'); }
+    if (view === 'owner') { this.loadOwnerGestures(); this.loadVehicleState(); this.refreshCameraDevices('owner'); }
     if (view === 'alerts') { this.loadAlertTypes(); this.loadAlerts(); this.loadAgentBriefing(); this.connectAlertSse(); }
     if (view === 'logs') { this.loadLogs(); this.loadLogStats(); }
   },
@@ -986,25 +986,35 @@ const App = {
     this.updateVehicle();
   },
 
-  async ensurePoliceCameraSelector() {
-    if (document.getElementById('police-camera-device')) return;
+  async ensureCameraSelector(module) {
+    if (document.getElementById(`${module}-camera-device`)) {
+      await this.refreshCameraDevices(module);
+      return;
+    }
+    if (module !== 'police') return;
     const streamUrlRow = document.getElementById('police-stream-url')?.closest('.stream-url-row');
     if (!streamUrlRow) return;
     const row = document.createElement('div');
     row.className = 'camera-device-row';
+    row.id = 'police-camera-row';
     row.innerHTML = `
       <select id="police-camera-device">
         <option value="">默认摄像头</option>
       </select>
-      <button class="btn" type="button" onclick="App.refreshPoliceCameraDevices()">刷新摄像头</button>
+      <button class="btn" type="button" onclick="App.refreshCameraDevices('police')">刷新摄像头</button>
+      <span id="police-camera-status" class="camera-status">尚未检测摄像头</span>
     `;
     streamUrlRow.parentNode.insertBefore(row, streamUrlRow);
-    await this.refreshPoliceCameraDevices();
+    await this.refreshCameraDevices(module);
   },
 
-  async refreshPoliceCameraDevices() {
-    const select = document.getElementById('police-camera-device');
-    if (!select || !navigator.mediaDevices?.enumerateDevices) return;
+  async refreshCameraDevices(module) {
+    const select = document.getElementById(`${module}-camera-device`);
+    const status = document.getElementById(`${module}-camera-status`);
+    if (!select || !navigator.mediaDevices?.enumerateDevices) {
+      if (status) status.textContent = '当前浏览器不支持摄像头设备枚举';
+      return [];
+    }
     const current = select.value;
     const devices = await navigator.mediaDevices.enumerateDevices().catch(() => []);
     const cameras = devices.filter(d => d.kind === 'videoinput');
@@ -1012,6 +1022,16 @@ const App = {
       `<option value="${d.deviceId}">${d.label || `摄像头 ${i + 1}`}</option>`
     ).join('');
     if (current && cameras.some(d => d.deviceId === current)) select.value = current;
+    if (status) status.textContent = cameras.length ? `检测到 ${cameras.length} 个摄像头` : '未检测到可用摄像头';
+    return cameras;
+  },
+
+  async ensurePoliceCameraSelector() {
+    return this.ensureCameraSelector('police');
+  },
+
+  async refreshPoliceCameraDevices() {
+    return this.refreshCameraDevices('police');
   },
 
   cameraErrorMessage(error) {
@@ -1035,12 +1055,12 @@ const App = {
     return `无法访问摄像头：${detail}`;
   },
 
-  async openPoliceCameraStream() {
+  async openCameraStream(module) {
     if (!navigator.mediaDevices?.getUserMedia) {
       throw new Error('当前浏览器不支持 getUserMedia 摄像头接口');
     }
-    await this.ensurePoliceCameraSelector();
-    const selectedDevice = document.getElementById('police-camera-device')?.value || '';
+    await this.ensureCameraSelector(module);
+    const selectedDevice = document.getElementById(`${module}-camera-device`)?.value || '';
     const baseVideo = {
       width: { ideal: 640 },
       height: { ideal: 480 },
@@ -1048,7 +1068,6 @@ const App = {
     };
     const attempts = [];
     if (selectedDevice) attempts.push({ video: { ...baseVideo, deviceId: { exact: selectedDevice } }, audio: false });
-    attempts.push({ video: { ...baseVideo, facingMode: { ideal: 'environment' } }, audio: false });
     attempts.push({ video: baseVideo, audio: false });
     attempts.push({ video: true, audio: false });
 
@@ -1061,6 +1080,10 @@ const App = {
       }
     }
     throw lastError || new Error('摄像头启动失败');
+  },
+
+  async openPoliceCameraStream() {
+    return this.openCameraStream('police');
   },
 
   async startStream(module) {
@@ -1090,21 +1113,23 @@ const App = {
     const video = document.getElementById(module + '-video');
     const canvas = document.getElementById(module + '-canvas');
     try {
+      const resultMap = { police: 'police-result', owner: 'owner-result' };
+      const resultBox = document.getElementById(resultMap[module]);
+      if (resultBox) resultBox.innerHTML = '正在请求摄像头权限…';
       const streamPreview = module === 'police' ? document.getElementById('police-stream-preview') : null;
       if (streamPreview) {
         streamPreview.hidden = true;
         streamPreview.removeAttribute('src');
       }
-      const stream = module === 'police'
-        ? await this.openPoliceCameraStream()
-        : await navigator.mediaDevices.getUserMedia({ video: true });
+      const stream = await this.openCameraStream(module);
       video.srcObject = stream;
       video.muted = true;
       video.playsInline = true;
       video.hidden = false;
       canvas.hidden = true;
-      await video.play().catch(() => {});
-      if (module === 'police') await this.refreshPoliceCameraDevices();
+      await video.play();
+      await this.refreshCameraDevices(module);
+      if (resultBox) resultBox.innerHTML = '摄像头已打开，正在连接识别服务…';
       const ctx = canvas.getContext('2d');
       const statusEl = document.getElementById('lpr-video-model-status');
       if (statusEl) statusEl.textContent = '摄像头已打开，等待识别结果…';
@@ -1114,6 +1139,9 @@ const App = {
         ? `${proto}://${location.host}/api/owner-gesture/ws-stream?token=${encodeURIComponent(this.token || '')}`
         : `${proto}://${location.host}/ws/stream/${module}`;
       this.wsStream = new WebSocket(wsUrl);
+      this.wsStream.onopen = () => {
+        if (resultBox) resultBox.innerHTML = '摄像头和识别服务已连接，等待手势…';
+      };
       this.wsStream.onmessage = (e) => {
         const msg = JSON.parse(e.data);
         this.streamBusy = false;
@@ -1131,6 +1159,11 @@ const App = {
           if (resultBox) resultBox.innerHTML = `识别失败：${msg.message}`;
         }
       };
+      this.wsStream.onerror = () => {
+        this.streamBusy = false;
+        if (resultBox) resultBox.innerHTML = '摄像头已打开，但识别服务连接失败，请检查后端服务。';
+      };
+      this.wsStream.onclose = () => { this.streamBusy = false; };
 
       const frameIntervalMs = module === 'police' ? 80 : 500;
       this.streamInterval = setInterval(() => {
@@ -1145,7 +1178,7 @@ const App = {
       }, frameIntervalMs);
     } catch (e) {
       this.stopStream();
-      const message = module === 'police' ? this.cameraErrorMessage(e) : ('无法访问摄像头: ' + e.message);
+      const message = this.cameraErrorMessage(e);
       const resultMap = { police: 'police-result', owner: 'owner-result' };
       const resultBox = document.getElementById(resultMap[module]);
       if (resultBox) resultBox.innerHTML = message;

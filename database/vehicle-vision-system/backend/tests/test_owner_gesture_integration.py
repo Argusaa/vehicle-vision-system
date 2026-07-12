@@ -64,6 +64,10 @@ def test_owner_public_routes_and_frontend_contract_are_present():
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
     js = (STATIC_DIR / "js" / "app.js").read_text(encoding="utf-8")
     assert 'id="owner-function-selector"' in html
+    assert 'id="owner-camera-device"' in html
+    assert 'id="owner-camera-status"' in html
     assert 'id="standby-page"' in html
     assert "/api/owner-gesture/ws-stream" in js
+    assert "openCameraStream(module)" in js
+    assert "refreshCameraDevices(module)" in js
     assert "showGestureConfirm(prompt)" in js
