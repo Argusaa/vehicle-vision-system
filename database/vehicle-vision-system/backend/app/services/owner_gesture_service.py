@@ -861,17 +861,17 @@ class OwnerGestureService:
         }
         if gesture == "no_gesture":
             if (
-                self._realtime_candidate_gesture != "no_gesture"
-                and now - self._realtime_candidate_since <= self._get_realtime_keep_sec(self._realtime_candidate_gesture)
-            ):
-                debug["hold"] = "keep_candidate_gap"
-                return "no_gesture", 0.0, debug
-            if (
                 self._realtime_confirmed_gesture != "no_gesture"
                 and now - self._realtime_confirmed_at <= self._get_realtime_keep_sec(self._realtime_confirmed_gesture)
             ):
                 debug["hold"] = "keep_confirmed"
                 return self._realtime_confirmed_gesture, self._realtime_confirmed_confidence, debug
+            if (
+                self._realtime_candidate_gesture != "no_gesture"
+                and now - self._realtime_candidate_since <= self._get_realtime_keep_sec(self._realtime_candidate_gesture)
+            ):
+                debug["hold"] = "keep_candidate_gap"
+                return "no_gesture", 0.0, debug
             self._realtime_candidate_gesture = "no_gesture"
             self._realtime_candidate_confidence = 0.0
             self._realtime_candidate_since = 0.0

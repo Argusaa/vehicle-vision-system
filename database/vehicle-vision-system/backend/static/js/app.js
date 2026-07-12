@@ -15,6 +15,11 @@ const App = {
   uploadedRecognitionResults: [],
   policeHistoryLastSaved: {},
   policeHistorySaveGapMs: 3000,
+  ownerCurrentControl: 'volume_up',
+  ownerLastGestureUntil: 0,
+  ownerLastGestureHtml: '',
+  ownerStandbyDismissed: false,
+  ownerStandbyLockedUntil: 0,
 
   init() {
     this.bindTabs();
@@ -406,7 +411,10 @@ const App = {
     if (!file) return;
     if (module === 'lpr' && !options.skipClear) this.clearLprDisplay();
     const isVideo = this.isVideoFile(file);
-    const endpoints = { lpr: '/api/lpr/recognize', owner: '/api/owner-gesture/recognize' };
+    const endpoints = {
+      lpr: '/api/lpr/recognize',
+      owner: isVideo ? '/api/owner-gesture/recognize-video' : '/api/owner-gesture/recognize',
+    };
     const previewMap = { lpr: 'lpr-preview', police: 'police-preview', owner: 'owner-preview' };
     const resultMap = { lpr: 'lpr-results', police: 'police-result', owner: 'owner-result' };
     const preview = document.getElementById(previewMap[module]);
@@ -425,7 +433,9 @@ const App = {
     } else if (preview && file.type.startsWith('image/')) {
       preview.src = URL.createObjectURL(file);
     }
-    if (resultBox) resultBox.innerHTML = '<div class="result-banner"><div class="result-title">正在识别，请稍候…</div></div>';
+    if (resultBox) resultBox.innerHTML = isVideo && module === 'owner'
+      ? '<div class="result-banner"><div class="result-title">正在解析视频并逐帧识别，请稍候…</div></div>'
+      : '<div class="result-banner"><div class="result-title">正在识别，请稍候…</div></div>';
     if (module === 'lpr') this.setLprLoading(true);
 
     const headers = {};
@@ -448,14 +458,37 @@ const App = {
         data = await res.json();
         if (!res.ok) throw new Error(data.detail || '识别失败');
       }
-      this.renderResult(module, data);
-      if (module === 'owner' && data.action) this.loadVehicleState();
+      if (module === 'owner' && isVideo) this.renderOwnerVideoPayload(data);
+      else this.renderResult(module, data);
+      if (module === 'owner' && !isVideo && data.action) this.loadVehicleState();
       if (options.returnData) return data;
     } catch (e) {
       if (resultBox) resultBox.innerHTML = `<div class="result-banner danger"><div class="result-title">识别失败</div><div class="result-subtitle">${e.message}</div></div>`;
       if (!options.skipAlert) alert(e.message);
     } finally {
       if (module === 'lpr' && !options.skipClear) this.setLprLoading(false);
+    }
+  },
+
+  renderOwnerVideoPayload(payload) {
+    const result = payload.best_result || payload.preview_result;
+    if (result) this.renderResult('owner', result);
+    const target = document.getElementById('owner-result');
+    if (target) {
+      const hits = (payload.results || []).slice(0, 8).map(item =>
+        `<div class="video-summary-item">帧 ${item.frame}: ${item.gesture_cn} (${Math.round((item.confidence || 0) * 100)}%)</div>`
+      ).join('');
+      target.insertAdjacentHTML('beforeend', `
+        <div class="video-summary">
+          <div class="video-summary-title">视频识别摘要</div>
+          <div class="video-summary-meta">总帧 ${payload.frame_count || 0} · 采样 ${payload.sampled_frames || 0} · 命中 ${payload.recognized_frames || 0}</div>
+          ${hits || '<div class="video-summary-item">未命中有效手势，但已完成视频分析。</div>'}
+        </div>`);
+    }
+    const state = payload.vehicle_state || payload.final_vehicle_state || result?.vehicle_state;
+    if (state) this.applyVehicleState(state);
+    if (result?.action === 'go_home' || (state?.current_page === 'standby' && !state?.is_awake)) {
+      this.forceStandby(1500);
     }
   },
 
@@ -738,13 +771,37 @@ const App = {
       document.getElementById('police-result').innerHTML = `${data.gesture_cn}<br><small>置信度 ${(data.confidence*100).toFixed(0)}%</small>`;
       this.loadPoliceHistory();
     } else if (module === 'owner') {
-      if (data.annotated_image) document.getElementById('owner-preview').src = 'data:image/jpeg;base64,' + data.annotated_image;
-      const confidence = Math.round((data.confidence || 0) * 100);
-      document.getElementById('owner-result').innerHTML = `<div class="gesture-name">${data.gesture_cn}</div><small>置信度 ${confidence}%</small>${data.action ? '<div class="action-tag">→ ' + data.action + '</div>' : ''}`;
+      if (this.isOwnerStandbyLocked() && !this.isWakeResult(data)) {
+        this.showStandby();
+        return;
+      }
+      const preview = document.getElementById('owner-preview');
+      if (preview && data.annotated_image) preview.src = 'data:image/jpeg;base64,' + data.annotated_image;
+      const resultBox = document.getElementById('owner-result');
+      if (resultBox) {
+        const now = Date.now();
+        if (data.gesture && data.gesture !== 'no_gesture') {
+          const confidence = Math.round((data.confidence || 0) * 100);
+          const color = data.confidence >= 0.85 ? '#3ddc84' : (data.confidence >= 0.6 ? '#f5a623' : '#f5533d');
+          const shouldHold = data.gesture !== 'palm_open';
+          this.ownerLastGestureUntil = shouldHold ? now + 1200 : now;
+          this.ownerLastGestureHtml = `
+            <div class="gesture-name">${data.gesture_cn}</div>
+            <div class="conf-bar-wrap"><div class="conf-bar" style="width:${confidence}%;background:${color}"></div></div>
+            <div class="conf-text">置信度 ${confidence}% · ${shouldHold ? '短暂停留 1.2 秒' : '实时显示'}</div>
+            ${data.action ? `<div class="action-tag">→ ${data.action}</div>` : ''}`;
+          resultBox.innerHTML = this.ownerLastGestureHtml;
+        } else if (now < this.ownerLastGestureUntil && this.ownerLastGestureHtml) {
+          resultBox.innerHTML = this.ownerLastGestureHtml;
+        } else {
+          this.ownerLastGestureHtml = '';
+          resultBox.innerHTML = '<span style="color:var(--text-muted)">未识别到手势，请将手部完整放入画面并保持光线充足</span>';
+        }
+      }
       if (data.confirmation_resolved) this.hideGestureConfirm();
       if (data.needs_confirmation) this.showGestureConfirm(data.confirm_prompt);
+      if (data.action === 'go_home') this.forceStandby(1500);
       if (data.vehicle_state) this.applyVehicleState(data.vehicle_state);
-      else if (data.action === 'go_home') this.showStandby();
       else if (data.action) this.loadVehicleState();
     }
   },
@@ -929,8 +986,42 @@ const App = {
     document.getElementById('v-temp').value = s.temperature;
     document.getElementById('v-temp-val').textContent = s.temperature;
     document.getElementById('v-phone').textContent = s.phone_status === 'in_call' ? '通话中' : '空闲';
-    document.querySelectorAll('#owner-function-selector .function-card').forEach(card => card.classList.toggle('active', card.dataset.control === s.current_page));
-    if (s.current_page === 'standby' && !s.is_awake) this.showStandby(); else this.hideStandby();
+    this.updateOwnerFunctionHighlight(s.current_page);
+    if (s.current_page === 'standby' && !s.is_awake) {
+      if (this.isOwnerStandbyLocked() || !this.ownerStandbyDismissed) this.showStandby();
+      else this.hideStandby();
+    } else {
+      this.ownerStandbyLockedUntil = 0;
+      this.ownerStandbyDismissed = false;
+      this.hideStandby();
+    }
+  },
+
+  updateOwnerFunctionHighlight(current) {
+    const selected = current && current !== 'standby' ? current : 'volume_up';
+    document.querySelectorAll('#owner-function-selector .function-card').forEach(card => {
+      card.classList.toggle('active', card.dataset.control === selected);
+    });
+  },
+
+  isOwnerStandbyLocked() {
+    return Date.now() < (this.ownerStandbyLockedUntil || 0);
+  },
+
+  isWakeResult(data) {
+    if (!data) return false;
+    if (data.action === 'wake') return true;
+    if (data.vehicle_state?.is_awake) return true;
+    return data.gesture === 'palm_open' && data.confidence >= 0.8;
+  },
+
+  forceStandby(lockMs = 0) {
+    this.ownerStandbyDismissed = false;
+    this.ownerStandbyLockedUntil = Math.max(
+      this.ownerStandbyLockedUntil || 0,
+      Date.now() + Math.max(0, lockMs),
+    );
+    this.showStandby();
   },
 
   showStandby() {
@@ -943,15 +1034,23 @@ const App = {
     };
     update();
     page.hidden = false;
+    page.setAttribute('aria-hidden', 'false');
+    document.body.style.overflow = 'hidden';
     this._standbyTimer = this._standbyTimer || setInterval(update, 1000);
   },
 
   hideStandby() {
     const page = document.getElementById('standby-page');
-    if (page) page.hidden = true;
+    if (page) {
+      page.hidden = true;
+      page.setAttribute('aria-hidden', 'true');
+    }
+    document.body.style.overflow = '';
   },
 
   exitStandby() {
+    this.ownerStandbyDismissed = true;
+    this.ownerStandbyLockedUntil = 0;
     this.hideStandby();
     document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
     document.querySelector('.nav-item[data-view="owner"]')?.classList.add('active');
@@ -1173,11 +1272,13 @@ const App = {
       this.wsStream = new WebSocket(wsUrl);
       this.wsStream.onopen = () => {
         if (resultBox) resultBox.innerHTML = '摄像头和识别服务已连接，等待手势…';
+        if (module === 'owner') this.wsStream.send(JSON.stringify({ type: 'ping' }));
       };
       this.wsStream.onmessage = (e) => {
         const msg = JSON.parse(e.data);
         this.streamBusy = false;
         if (msg.type === 'result') {
+          if (module === 'owner' && msg.data?.action === 'go_home') this.forceStandby(1500);
           this.renderResult(module, msg.data);
           if (module === 'police') this.savePoliceHistoryRecord(msg.data, 'camera');
         }
@@ -1185,7 +1286,7 @@ const App = {
           if (msg.data?.vehicle_state) this.applyVehicleState(msg.data.vehicle_state);
           this.hideGestureConfirm();
         }
-        if (msg.type === 'frame_error') {
+        if (msg.type === 'frame_error' || msg.type === 'error') {
           const resultMap = { police: 'police-result', owner: 'owner-result' };
           const resultBox = document.getElementById(resultMap[module]);
           if (resultBox) resultBox.innerHTML = `识别失败：${msg.message}`;
@@ -1197,14 +1298,15 @@ const App = {
       };
       this.wsStream.onclose = () => { this.streamBusy = false; };
 
-      const frameIntervalMs = module === 'police' ? 80 : 500;
+      const frameIntervalMs = module === 'police' ? 80 : 200;
       this.streamInterval = setInterval(() => {
-        if (video.readyState >= 2 && this.wsStream?.readyState === WebSocket.OPEN && !this.streamBusy) {
-          this.streamBusy = true;
+        const canSend = module === 'owner' || !this.streamBusy;
+        if (video.readyState >= 2 && this.wsStream?.readyState === WebSocket.OPEN && canSend) {
+          if (module !== 'owner') this.streamBusy = true;
           canvas.width = video.videoWidth;
           canvas.height = video.videoHeight;
           ctx.drawImage(video, 0, 0);
-          const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
+          const dataUrl = canvas.toDataURL('image/jpeg', module === 'owner' ? 0.6 : 0.7);
           this.wsStream.send(JSON.stringify({ type: 'frame', data: dataUrl.split(',')[1] }));
         }
       }, frameIntervalMs);

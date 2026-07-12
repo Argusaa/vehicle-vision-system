@@ -55,6 +55,30 @@ def test_low_confidence_confirm_is_deferred_and_can_be_accepted():
     assert not service.has_pending_confirm()
 
 
+def test_realtime_gesture_requires_stable_candidate_and_bridges_short_gap():
+    service = _service_without_models()
+    service._realtime_candidate_gesture = "no_gesture"
+    service._realtime_candidate_confidence = 0.0
+    service._realtime_candidate_since = 0.0
+    service._realtime_confirmed_gesture = "no_gesture"
+    service._realtime_confirmed_confidence = 0.0
+    service._realtime_confirmed_at = 0.0
+
+    gesture, _, debug = service._apply_realtime_confirmation("fist", 0.9, 10.0)
+    assert gesture == "no_gesture"
+    assert debug["hold"] == "wait_candidate"
+
+    gesture, confidence, debug = service._apply_realtime_confirmation("fist", 0.92, 10.2)
+    assert gesture == "fist"
+    assert confidence == 0.92
+    assert debug["hold"] == "candidate_confirmed"
+
+    gesture, confidence, debug = service._apply_realtime_confirmation("no_gesture", 0.0, 10.3)
+    assert gesture == "fist"
+    assert confidence == 0.92
+    assert debug["hold"] == "keep_confirmed"
+
+
 def test_owner_public_routes_and_frontend_contract_are_present():
     paths = {route.path for route in owner_router.routes if hasattr(route, "path")}
     assert "/api/owner-gesture/recognize-video" in paths
@@ -73,3 +97,9 @@ def test_owner_public_routes_and_frontend_contract_are_present():
     assert "cameraDevicePriority(device)" in js
     assert "自动选择（优先笔记本前置摄像头）" in html
     assert "showGestureConfirm(prompt)" in js
+    assert "renderOwnerVideoPayload(payload)" in js
+    assert "/api/owner-gesture/recognize-video" in js
+    assert "ownerLastGestureUntil" in js
+    assert "ownerStandbyDismissed = true" in js
+    assert "module === 'police' ? 80 : 200" in js
+    assert "msg.type === 'frame_error' || msg.type === 'error'" in js

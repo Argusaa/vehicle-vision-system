@@ -177,6 +177,15 @@ h2 {
   font-size: 1.5rem; font-weight: 600; padding: 1rem;
   background: var(--surface2); border-radius: 8px; text-align: center; margin-bottom: 1rem;
 }
+.gesture-name { font-size: 1.3rem; font-weight: 600; margin-bottom: .5rem; }
+.conf-bar-wrap { height: 10px; border-radius: 6px; background: var(--surface); overflow: hidden; margin: .4rem 0; }
+.conf-bar { height: 100%; border-radius: 6px; transition: width .2s ease; }
+.conf-text { font-size: .85rem; color: var(--text-muted); }
+.action-tag { margin-top: .4rem; color: var(--success); font-weight: 600; }
+.video-summary { margin-top: .85rem; padding: .85rem 1rem; border-radius: 12px; background: rgba(15,23,42,.65); border: 1px solid var(--border); text-align: left; }
+.video-summary-title { font-size: .95rem; font-weight: 700; margin-bottom: .25rem; }
+.video-summary-meta { color: var(--text-muted); font-size: .82rem; margin-bottom: .55rem; }
+.video-summary-item { font-size: .84rem; color: var(--text); margin-top: .3rem; }
 .gesture-ref { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: 1rem; }
 .gesture-tag {
   background: var(--surface2); padding: .4rem .8rem; border-radius: 20px; font-size: .8rem;
