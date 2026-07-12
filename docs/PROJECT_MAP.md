@@ -25,6 +25,8 @@ The single runnable application lives under `database/vehicle-vision-system/`.
 - `backend/app/services/owner_gesture_service.py` - owner gestures
 - `backend/app/services/alert_agent.py` - monitoring and alerts
 - `backend/app/services/llm_service.py` - LLM alert summaries
+- `backend/app/services/log_stream.py` - real-time log SSE fan-out
+- `backend/app/utils/user_language.py` - user-facing alert explanations and actions
 
 Paths in the service, router, model and utility sections above are relative to
 `database/vehicle-vision-system/`.
