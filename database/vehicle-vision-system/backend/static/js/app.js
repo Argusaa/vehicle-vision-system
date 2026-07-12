@@ -814,8 +814,12 @@ const App = {
       if (data.confirmation_resolved) this.hideGestureConfirm();
       if (data.needs_confirmation) this.showGestureConfirm(data.confirm_prompt);
       if (data.action === 'go_home') this.forceStandby(1500);
-      if (data.vehicle_state) this.applyVehicleState(data.vehicle_state);
-      else if (data.action) this.loadVehicleState();
+      // Realtime recognition responses also carry the last persisted state. A
+      // no-action frame must not overwrite a manual slider/button edit that is
+      // being saved at the same time.
+      const shouldApplyVehicleState = !opts.realtime || Boolean(data.action) || Boolean(data.confirmation_resolved);
+      if (data.vehicle_state && shouldApplyVehicleState) this.applyVehicleState(data.vehicle_state);
+      else if (data.action && !data.vehicle_state) this.loadVehicleState();
     }
   },
 
@@ -1089,7 +1093,8 @@ const App = {
     document.getElementById('v-volume-val').textContent = data.volume;
     document.getElementById('v-temp-val').textContent = data.temperature;
     try {
-      await this.api('/api/owner-gesture/vehicle-state', { method: 'PUT', body: JSON.stringify(data) });
+      const saved = await this.api('/api/owner-gesture/vehicle-state', { method: 'PUT', body: JSON.stringify(data) });
+      this.applyVehicleState(saved);
     } catch (e) {}
   },
 
@@ -1292,7 +1297,7 @@ const App = {
         this.streamBusy = false;
         if (msg.type === 'result') {
           if (module === 'owner' && msg.data?.action === 'go_home') this.forceStandby(1500);
-          this.renderResult(module, msg.data);
+          this.renderResult(module, msg.data, { realtime: module === 'owner' });
           if (module === 'police') this.savePoliceHistoryRecord(msg.data, 'camera');
         }
         if (msg.type === 'confirmed') {
@@ -1369,7 +1374,7 @@ const App = {
           streamPreview.src = 'data:image/jpeg;base64,' + msg.data.annotated_image;
           streamPreview.hidden = false;
         }
-        this.renderResult(module, msg.data);
+        this.renderResult(module, msg.data, { realtime: module === 'owner' });
         if (module === 'police') this.savePoliceHistoryRecord(msg.data, 'stream');
       }
       if (msg.type === 'error') {

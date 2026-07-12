@@ -123,6 +123,9 @@ def test_owner_public_routes_and_frontend_contract_are_present():
     assert 'id="owner-function-selector"' in html
     assert 'id="owner-camera-device"' in html
     assert 'id="owner-camera-status"' in html
+    assert "const shouldApplyVehicleState = !opts.realtime" in js
+    assert "{ realtime: module === 'owner' }" in js
+    assert "const saved = await this.api('/api/owner-gesture/vehicle-state'" in js
     assert 'id="standby-page"' in html
     assert "/api/owner-gesture/ws-stream" in js
     assert "openCameraStream(module)" in js
