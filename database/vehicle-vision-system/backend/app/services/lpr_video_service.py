@@ -110,7 +110,7 @@ class LprVideoService:
             "plates": [
                 {
                     "plate_number": p.get("text", "无法识别"),
-                    "plate_color": "蓝牌",
+                    "plate_color": p.get("plate_color", "蓝牌"),
                     "bbox": list(p.get("coords", (0, 0, 0, 0))),
                     "indices": [],
                     "confidence": float(p.get("confidence", 0.0)),
@@ -559,7 +559,7 @@ class LprVideoService:
                 "plates": [
                     {
                         "plate_number": p.get("text", "无法识别"),
-                        "plate_color": "蓝牌",
+                        "plate_color": p.get("plate_color", "蓝牌"),
                         "bbox": list(p.get("coords", (0, 0, 0, 0))),
                         "indices": [],
                         "confidence": float(p.get("confidence", 0.0)),

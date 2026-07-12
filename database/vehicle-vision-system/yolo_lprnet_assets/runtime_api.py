@@ -18,7 +18,8 @@ if str(ASSET_ROOT) not in sys.path:
 
 from yolo_utils import YOLOPlateDetector
 from model.LPRNet import build_lprnet
-from data.load_data import CHARS
+from app.yolo_lprnet.charset import CHARS
+from app.utils.plate_color import resolve_plate_color
 from demo_integrated_lpr import greedy_decode
 
 
@@ -100,13 +101,15 @@ class YoloLprRuntime:
                 continue
             plate_image = frame[y1:y2, x1:x2]
             plate_text = self.recognize_plate(plate_image)
+            plate_color = resolve_plate_color(frame, [x1, y1, x2, y2])
             plate_results.append({
                 "coords": (x1, y1, x2, y2),
                 "confidence": float(conf),
                 "text": plate_text,
+                "plate_color": plate_color,
             })
             cv2.rectangle(result_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            label = f"{plate_text} ({conf:.2f})"
+            label = f"{plate_text} ({plate_color})"
             try:
                 from PIL import Image, ImageDraw, ImageFont
                 pil = Image.fromarray(cv2.cvtColor(result_frame, cv2.COLOR_BGR2RGB))
