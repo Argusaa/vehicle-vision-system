@@ -1101,7 +1101,7 @@ const App = {
     document.getElementById('v-volume-val').textContent = s.volume;
     document.getElementById('v-temp').value = s.temperature;
     document.getElementById('v-temp-val').textContent = s.temperature;
-    document.getElementById('v-phone').textContent = s.phone_status === 'in_call' ? '通话中' : '空闲';
+    this.updatePhoneState(s.phone_status);
     this.updateOwnerFunctionHighlight(s.current_page);
     if (s.current_page === 'standby' && !s.is_awake) {
       if (this.isOwnerStandbyLocked() || !this.ownerStandbyDismissed) this.showStandby();
@@ -1116,8 +1116,24 @@ const App = {
   updateOwnerFunctionHighlight(current) {
     const selected = current && current !== 'standby' ? current : 'volume_up';
     document.querySelectorAll('#owner-function-selector .function-card').forEach(card => {
-      card.classList.toggle('active', card.dataset.control === selected);
+      const isSelected = card.dataset.control === selected;
+      card.classList.toggle('active', isSelected);
+      card.setAttribute('aria-current', isSelected ? 'true' : 'false');
     });
+  },
+
+  updatePhoneState(status) {
+    const inCall = status === 'in_call';
+    const phone = document.getElementById('v-phone');
+    const answer = document.getElementById('v-answer');
+    const hangup = document.getElementById('v-hangup');
+    phone.textContent = inCall ? '通话中' : '空闲';
+    phone.classList.toggle('in-call', inCall);
+    phone.classList.toggle('idle', !inCall);
+    answer.classList.toggle('active', inCall);
+    hangup.classList.toggle('active', !inCall);
+    answer.setAttribute('aria-pressed', inCall ? 'true' : 'false');
+    hangup.setAttribute('aria-pressed', inCall ? 'false' : 'true');
   },
 
   isOwnerStandbyLocked() {
@@ -1198,7 +1214,7 @@ const App = {
   },
 
   setPhone(status) {
-    document.getElementById('v-phone').textContent = status === 'in_call' ? '通话中' : '空闲';
+    this.updatePhoneState(status);
     this.updateVehicle();
   },
 

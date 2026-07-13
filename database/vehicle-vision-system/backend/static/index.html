@@ -285,19 +285,19 @@
                 <h3>🚗 模拟车辆控制面板</h3>
                 <div class="vehicle-control">
                   <label>系统状态: <span id="v-awake">休眠</span></label>
-                  <label>当前选择: <span id="v-page">volume_up</span></label>
+                  <label class="current-control-label">当前选择: <span id="v-page" aria-live="polite">音量 +</span></label>
                   <div class="function-selector" id="owner-function-selector">
-                    <div class="function-card" data-control="volume_up"><strong>音量 +</strong><small>握拳确认增加音量</small></div>
-                    <div class="function-card" data-control="volume_down"><strong>音量 -</strong><small>握拳确认降低音量</small></div>
-                    <div class="function-card" data-control="temp_up"><strong>温度 +</strong><small>握拳确认升高温度</small></div>
-                    <div class="function-card" data-control="temp_down"><strong>温度 -</strong><small>握拳确认降低温度</small></div>
+                    <div class="function-card active" data-control="volume_up" aria-current="true"><strong>音量 +</strong><small>握拳或画圈增加音量</small></div>
+                    <div class="function-card" data-control="volume_down" aria-current="false"><strong>音量 -</strong><small>握拳或画圈降低音量</small></div>
+                    <div class="function-card" data-control="temp_up" aria-current="false"><strong>温度 +</strong><small>握拳或画圈升高温度</small></div>
+                    <div class="function-card" data-control="temp_down" aria-current="false"><strong>温度 -</strong><small>握拳或画圈降低温度</small></div>
                   </div>
                   <label>音量: <input type="range" id="v-volume" min="0" max="100" value="50" onchange="App.updateVehicle()"> <span id="v-volume-val">50</span></label>
                   <label>空调温度: <input type="range" id="v-temp" min="16" max="32" value="24" onchange="App.updateVehicle()"> <span id="v-temp-val">24</span>°C</label>
                   <div class="phone-btns">
-                    <button class="btn" id="v-answer" onclick="App.setPhone('in_call')">📞 接听</button>
-                    <button class="btn" id="v-hangup" onclick="App.setPhone('idle')">📵 挂断</button>
-                    <span id="v-phone">空闲</span>
+                    <button class="btn" id="v-answer" aria-pressed="false" onclick="App.setPhone('in_call')">📞 接听</button>
+                    <button class="btn" id="v-hangup" aria-pressed="true" onclick="App.setPhone('idle')">📵 挂断</button>
+                    <span id="v-phone" class="phone-status idle" role="status" aria-live="polite">空闲</span>
                   </div>
                   <div class="gesture-hints">手掌张开 → 唤醒系统；向左指/左滑 → 上一个功能；向右指/右滑 → 下一个功能；握拳 → 确认当前功能；单指画圈 → 调节当前选中项；点赞 → 接听电话；倒赞 → 挂断电话；挥手 → 返回待机。</div>
                 </div>
