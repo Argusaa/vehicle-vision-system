@@ -141,6 +141,16 @@ class AuthenticationFlowTests(unittest.TestCase):
         self.assertNotIn("微信扫码", html)
         self.assertNotIn("每个注册账号都会进入自己的独立工作台", html)
 
+    def test_login_frontend_matches_auth_api_contract(self):
+        js = (Path(__file__).resolve().parents[1] / "static" / "js" / "app.js").read_text(encoding="utf-8")
+        for marker in (
+            "'register-email'", "'register-code'", "verification_code: verificationCode",
+            "'code-email'", "JSON.stringify({ email, purpose })", "JSON.stringify({ email, code })",
+        ):
+            self.assertIn(marker, js)
+        for legacy_marker in ("'code-target'", "'register-phone'", "target_type"):
+            self.assertNotIn(legacy_marker, js)
+
     @patch("app.services.auth_email.smtplib.SMTP")
     def test_verification_email_uses_starttls_smtp(self, smtp):
         with (

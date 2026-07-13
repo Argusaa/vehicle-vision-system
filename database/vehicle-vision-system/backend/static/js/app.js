@@ -229,8 +229,12 @@ const App = {
   },
 
   async login() {
-    const username = document.getElementById('login-user').value;
+    const username = document.getElementById('login-user').value.trim();
     const password = document.getElementById('login-pass').value;
+    if (!username || !password) {
+      alert('请输入用户名和密码');
+      return;
+    }
     try {
       const data = await this.api('/api/auth/login', {
         method: 'POST',
@@ -245,16 +249,25 @@ const App = {
   async register() {
     const username = document.getElementById('register-user').value.trim();
     const password = document.getElementById('register-pass').value;
-    const email = document.getElementById('register-email').value.trim() || null;
-    const phone = document.getElementById('register-phone').value.trim() || null;
-    if (!username || !password) {
-      alert('请输入用户名和密码');
+    const passwordConfirm = document.getElementById('register-pass-confirm').value;
+    const email = document.getElementById('register-email').value.trim();
+    const verificationCode = document.getElementById('register-code').value.trim();
+    if (!username || !password || !email || !verificationCode) {
+      alert('请完整填写注册信息');
+      return;
+    }
+    if (password.length < 8) {
+      alert('密码至少需要 8 位');
+      return;
+    }
+    if (password !== passwordConfirm) {
+      alert('两次输入的密码不一致');
       return;
     }
     try {
       const data = await this.api('/api/auth/register', {
         method: 'POST',
-        body: JSON.stringify({ username, password, email, phone }),
+        body: JSON.stringify({ username, password, email, verification_code: verificationCode }),
       });
       this.token = data.access_token;
       localStorage.setItem('token', this.token);
@@ -309,24 +322,53 @@ const App = {
     document.body.style.overflow = '';
   },
 
-  async sendCode() {
-    const target = document.getElementById('code-target').value;
+  async sendCode(purpose) {
+    const isRegister = purpose === 'register';
+    const email = document.getElementById(isRegister ? 'register-email' : 'code-email').value.trim();
+    const button = document.getElementById(isRegister ? 'register-code-button' : 'login-code-button');
+    if (!email) {
+      alert('请输入邮箱');
+      return;
+    }
     try {
       const data = await this.api('/api/auth/send-code', {
         method: 'POST',
-        body: JSON.stringify({ target, target_type: target.includes('@') ? 'email' : 'phone' }),
+        body: JSON.stringify({ email, purpose }),
       });
-      alert('验证码: ' + data.code + ' (演示模式直接显示)');
+      alert(data.message);
+      this.startCodeCountdown(button);
     } catch (e) { alert(e.message); }
   },
 
+  startCodeCountdown(button, seconds = 60) {
+    if (!button) return;
+    const originalText = button.textContent;
+    button.disabled = true;
+    let remaining = seconds;
+    button.textContent = `${remaining} 秒后重试`;
+    const timer = setInterval(() => {
+      remaining -= 1;
+      if (remaining <= 0) {
+        clearInterval(timer);
+        button.disabled = false;
+        button.textContent = originalText;
+        return;
+      }
+      button.textContent = `${remaining} 秒后重试`;
+    }, 1000);
+  },
+
   async loginCode() {
-    const target = document.getElementById('code-target').value;
-    const code = document.getElementById('code-input').value;
+    const email = document.getElementById('code-email').value.trim();
+    const code = document.getElementById('code-input').value.trim();
+    if (!email || !code) {
+      alert('请输入注册邮箱和验证码');
+      return;
+    }
     try {
       const data = await this.api('/api/auth/login-code', {
         method: 'POST',
-        body: JSON.stringify({ target, code, target_type: target.includes('@') ? 'email' : 'phone' }),
+        body: JSON.stringify({ email, code }),
       });
       this.token = data.access_token;
       localStorage.setItem('token', this.token);
