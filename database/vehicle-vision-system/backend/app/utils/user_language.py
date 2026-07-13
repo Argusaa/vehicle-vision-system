@@ -17,6 +17,9 @@ EVENT_USER_NAMES: dict[str, str] = {
     "email_delivery_failure": "邮件通知发送失败",
     "config_missing": "系统配置不完整",
     "test_event": "测试提醒",
+    "scenario_conflict_detected": "多路感知场景冲突",
+    "fusion_recommendation_issued": "融合处置建议",
+    "owner_action_suppressed": "车主控车动作被抑制",
     "unknown": "系统异常",
 }
 
@@ -148,6 +151,32 @@ ACTION_PLANS: dict[str, dict[str, Any]] = {
         ],
         "impact": "暂时无法生成更详细的智能解读，但基础告警信息仍然有效。",
     },
+    "scenario_conflict_detected": {
+        "root_cause": "车牌、交警手势与车主控车在同一时间窗口内出现了互相矛盾的指令，道路安全信号应优先于车内操作。",
+        "actions": [
+            "立即查看融合建议，优先服从交警手势（停止/靠边/转向等）。",
+            "暂停或取消与之冲突的车内手势操作，待现场指令明确后再继续。",
+            "在告警中心确认处置后，系统会解除车主动作抑制。",
+        ],
+        "impact": "若继续执行车主控车，可能与道路指挥冲突，存在行驶安全风险。",
+    },
+    "fusion_recommendation_issued": {
+        "root_cause": "智能体已根据冲突规则生成融合处置建议，用于指导驾驶员如何取舍。",
+        "actions": [
+            "阅读融合建议卡片中的具体说明。",
+            "按建议先处理道路侧指令，再处理车内需求。",
+            "处理完成后在场景冲突面板标记已处置。",
+        ],
+        "impact": "这是辅助决策提示，不会替代驾驶员对现场情况的最终判断。",
+    },
+    "owner_action_suppressed": {
+        "root_cause": "检测到与交警手势冲突的车主控车动作，系统已临时拦截执行以保护安全。",
+        "actions": [
+            "确认交警手势已解除或车辆已停稳后，再尝试车内手势。",
+            "如需立即恢复，可在场景冲突面板完成处置确认。",
+        ],
+        "impact": "车主手势控车暂时不可用，避免与道路指挥叠加误操作。",
+    },
 }
 
 
@@ -236,9 +265,24 @@ def humanize_tech_terms(text: str) -> str:
     return result
 
 
+def is_chitchat(question: str) -> bool:
+    """识别闲聊/打招呼类问题，不强制绑定告警上下文。"""
+    q = (question or "").strip().lower()
+    if not q or len(q) > 80:
+        return False
+    chitchat_keys = (
+        "你好", "您好", "谢谢", "感谢", "再见", "拜拜", "你是谁", "你叫什么",
+        "你能做什么", "你会什么", "介绍一下你自己", "早上好", "晚上好", "在吗",
+        "嗨", "hello", "hi", "厉害", "辛苦了", "好的", "ok",
+    )
+    return any(k in q for k in chitchat_keys)
+
+
 def detect_assistant_intent(question: str) -> str:
     """识别用户提问意图，用于生成差异化回答。"""
     q = (question or "").strip()
+    if is_chitchat(q):
+        return "general"
     if any(k in q for k in ("根因", "原因", "为什么", "怎么回事", "咋回事", "什么情况")):
         return "root_cause"
     if any(k in q for k in ("处理", "建议", "怎么办", "如何", "该怎么做", "怎么解决", "步骤", "修复")):
@@ -249,22 +293,25 @@ def detect_assistant_intent(question: str) -> str:
         return "impact"
     if any(k in q for k in ("状态", "正常吗", "有没有问题", "巡检", "现在怎样")):
         return "status"
+    if any(k in q for k in (
+        "驾驶", "路况", "避让", "减速", "融合", "三路", "综合建议", "综合驾驶",
+        "前方", "跟车", "停车", "怎么走", "怎么开",
+    )):
+        return "driving"
     return "general"
 
 
 def needs_alert_context(question: str, intent: str | None = None) -> bool:
-    """问题是否必须先绑定到某一条具体告警（否则应反问用户）。"""
+    """问题是否必须先绑定到某一条具体告警（仅当用户明确指向某条告警时）。"""
     q = (question or "").strip()
-    q_intent = intent or detect_assistant_intent(question)
-
+    if is_chitchat(q):
+        return False
     if any(k in q for k in ("深度根因分析", "对这个告警", "该告警的", "这条告警的")):
         return True
     if any(k in q for k in (
         "这个异常", "这条异常", "当前告警", "该告警", "这个提醒", "这条提醒",
         "刚才那条", "刚才的告警", "刚才的提醒",
     )):
-        return True
-    if q_intent in ("root_cause", "action", "severity", "impact"):
         return True
     return False
 
@@ -459,6 +506,30 @@ def assistant_answer_for_user(
             return f"{detail_hint}\n{body}"
         return body
 
+    if is_chitchat(question):
+        sys_status = context.get("system_status") or {}
+        open_count = sys_status.get("open_alerts", 0)
+        extra = f"当前有 {open_count} 条未处理提醒。" if open_count else "系统整体运行正常。"
+        return (
+            f"您好，我是告警助手小智，可以帮您解读车牌识别、手势识别、告警提醒和综合驾驶建议。"
+            f"{extra}"
+            f"您可以问我系统状态、某条告警怎么办，或者直接聊路况和驾驶建议。"
+        )
+
+    if q_intent == "driving":
+        advice = (context.get("driving_advice") or {}).get("advice")
+        summary = (context.get("driving_advice") or {}).get("signals_summary", "")
+        if advice:
+            body = advice
+            if summary:
+                body = f"当前感知：{summary}\n{advice}"
+            return body
+        scenario = (context.get("perception") or {}).get("scenario") or {}
+        hint = scenario.get("fusion_status_hint")
+        if hint:
+            return hint
+        return "当前三路感知信号较少，请保持正常行驶；开启车牌、交警、车主识别后我可给出更具体的综合建议。"
+
     if q_intent == "status":
         lines = [f"当前关注：「{title}」"]
         if detail_hint:
@@ -524,7 +595,27 @@ def assistant_answer_for_user(
             return humanize_tech_terms(f"对您来说，{impact}\n具体情况：{detail_hint}")
         return humanize_tech_terms(f"对您来说，{impact}")
 
-    # general：综合回答，避免千篇一律
+    # general：综合回答；无具体告警时结合系统概况自由回复
+    has_specific_alert = bool(
+        context.get("alert_id")
+        or (context.get("title") and context.get("event_type") not in (None, "", "unknown"))
+    )
+    if not has_specific_alert:
+        sys_status = context.get("system_status") or {}
+        open_count = sys_status.get("open_alerts", 0)
+        lines = []
+        if open_count:
+            lines.append(f"目前还有 {open_count} 条提醒待处理，您可以在告警中心逐条查看。")
+        else:
+            lines.append("系统整体运行正常，暂无未处理提醒。")
+        if perception.get("lpr"):
+            lpr = perception["lpr"]
+            lines.append(
+                f"车牌识别近 {lpr.get('recent_attempts', 0)} 次，失败 {lpr.get('recent_failures', 0)} 次。"
+            )
+        lines.append("您可以问我告警怎么处理、系统是否正常，或聊综合驾驶建议。")
+        return "\n".join(lines)
+
     parts = [f"关于「{title}」"]
     if detail_hint:
         parts.append(detail_hint)
