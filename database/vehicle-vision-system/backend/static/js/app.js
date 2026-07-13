@@ -22,6 +22,19 @@ const App = {
   ownerStandbyLockedUntil: 0,
   focusedAlertId: null,
   focusedAlertTitle: '',
+  // 告警中心联合识别使用独立运行态，不复用单模块的 streamModule/wsStream。
+  jointRecognition: {
+    running: false,
+    starting: false,
+    channels: {},
+    mediaSources: new Map(),
+    refreshTimer: null,
+    refreshInFlight: false,
+    refreshDirty: false,
+    lastRefreshAt: 0,
+    runToken: 0,
+  },
+  alertScenarioLogSse: null,
 
   init() {
     this.bindTabs();
@@ -205,6 +218,9 @@ const App = {
     const previousView = this.currentView;
     this.currentView = view;
     if (previousView === 'logs' && view !== 'logs' && this.disconnectLogStream) this.disconnectLogStream();
+    if (previousView === 'alerts' && view !== 'alerts' && this.disconnectAlertScenarioLogStream) {
+      this.disconnectAlertScenarioLogStream();
+    }
     if (view === 'dashboard') this.loadDashboard();
     if (view === 'lpr') { this.loadLprHistory(); this.loadLprModelStatus(); }
     if (view === 'police') { this.loadPolicePoseBackend(); this.loadPoliceGestures(); this.loadPoliceHistory(); this.ensureCameraSelector('police'); }
@@ -212,6 +228,8 @@ const App = {
     if (view === 'alerts') {
       this.connectAlertWs();
       if (this.connectSSE) this.connectSSE();
+      if (this.initJointRecognition) this.initJointRecognition();
+      if (this.connectAlertScenarioLogStream) this.connectAlertScenarioLogStream();
       this.loadAlerts();
       this.loadAlertTypes();
       if (this.loadScenarioFusion) this.loadScenarioFusion();
@@ -414,6 +432,8 @@ const App = {
   logout() {
     this.token = '';
     localStorage.removeItem('token');
+    if (this.stopJointRecognition) this.stopJointRecognition();
+    if (this.disconnectAlertScenarioLogStream) this.disconnectAlertScenarioLogStream();
     this.stopVideoStream();
     if (this.disconnectSSE) this.disconnectSSE();
     if (this.stopAgentMonitorLoop) this.stopAgentMonitorLoop();
@@ -694,6 +714,7 @@ const App = {
   },
 
   startUploadedPoliceVideo() {
+    if (this.jointRecognitionBlocksLegacyStart?.()) return;
     this.stopStream();
     const video = document.getElementById('police-upload-preview');
     const canvas = document.getElementById('police-canvas');
@@ -1351,6 +1372,7 @@ const App = {
   },
 
   async startStream(module) {
+    if (this.jointRecognitionBlocksLegacyStart?.()) return;
     if (module === 'lpr') {
       this.stopVideoStream();
       this.lprVideoMode = 'camera';
@@ -1453,6 +1475,7 @@ const App = {
   },
 
   startUrlStream(module) {
+    if (this.jointRecognitionBlocksLegacyStart?.()) return;
     this.stopStream();
     const input = document.getElementById(module + '-stream-url');
     const url = (input?.value || '').trim();
@@ -1579,6 +1602,7 @@ const App = {
   },
 
   async startLprRtspStream() {
+    if (this.jointRecognitionBlocksLegacyStart?.()) return;
     this.stopVideoStream();
     this.lprVideoMode = 'rtsp';
     this.lprRtspMode = 'rtsp';
@@ -1658,6 +1682,7 @@ const App = {
   },
 
   async startVideoFileStream(file) {
+    if (this.jointRecognitionBlocksLegacyStart?.()) return;
     this.stopVideoStream();
     this.lprVideoMode = 'file';
     const video = document.getElementById('lpr-video-output');

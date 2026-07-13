@@ -1,5 +1,6 @@
 import io
 import math
+import threading
 import time
 from pathlib import Path
 from collections import Counter, deque
@@ -198,6 +199,26 @@ class OwnerGestureService:
         self._wake_lock_until: float = 0.0
         # 等待用户二次确认的挂起动作 (低置信度 confirm 流程)
         self._pending_confirm: dict | None = None
+        # 运行时轨迹/去抖状态保存在服务实例内，因此同一进程只允许一个
+        # 实时车主流，防止不同摄像头或用户的帧串成同一手势。
+        self._realtime_session_guard = threading.Lock()
+        self._active_realtime_session: str | None = None
+
+    def acquire_realtime_session(self, session_id: str) -> bool:
+        with self._realtime_session_guard:
+            if self._active_realtime_session not in (None, session_id):
+                return False
+            if self._active_realtime_session is None:
+                self._reset_runtime_state(clear_confirmation=True)
+                self._active_realtime_session = session_id
+            return True
+
+    def release_realtime_session(self, session_id: str) -> None:
+        with self._realtime_session_guard:
+            if self._active_realtime_session != session_id:
+                return
+            self._reset_runtime_state(clear_confirmation=True)
+            self._active_realtime_session = None
 
     def _reset_runtime_state(self, clear_confirmation: bool = True) -> None:
         self._position_history.clear()

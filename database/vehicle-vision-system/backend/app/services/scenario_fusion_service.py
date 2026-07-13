@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import uuid
 from collections import deque
 from datetime import datetime, timedelta
@@ -29,6 +30,7 @@ class ScenarioFusionService:
     """汇聚 LPR / 交警 / 车主三路感知，判定冲突并联动告警。"""
 
     def __init__(self) -> None:
+        self._state_lock = threading.RLock()
         self._events: deque[dict[str, Any]] = deque(maxlen=200)
         self._last_signals: dict[str, Any] = {
             "lpr": None,
@@ -40,6 +42,8 @@ class ScenarioFusionService:
         self._last_driving_advice: dict[str, Any] | None = None
         self._last_driving_advice_at: datetime | None = None
         self._last_driving_advice_key: str | None = None
+        self._revision = 0
+        self._updated_at: datetime | None = None
 
     def _now(self) -> datetime:
         return datetime.utcnow()
@@ -47,16 +51,70 @@ class ScenarioFusionService:
     def _window_cutoff(self) -> datetime:
         return self._now() - timedelta(seconds=settings.scenario_window_seconds)
 
-    def _prune_events(self) -> None:
-        cutoff = self._window_cutoff()
+    def _touch(self, changed_at: datetime | None = None) -> int:
+        self._revision += 1
+        self._updated_at = changed_at or self._now()
+        return self._revision
+
+    def _prune_events_locked(self, now: datetime | None = None) -> bool:
+        now = now or self._now()
+        cutoff = now - timedelta(seconds=settings.scenario_window_seconds)
+        pruned = False
         while self._events and self._events[0]["timestamp"] < cutoff:
             self._events.popleft()
+            pruned = True
+        if pruned:
+            self._touch(now)
+        return pruned
+
+    def _prune_events(self) -> bool:
+        with self._state_lock:
+            return self._prune_events_locked()
 
     def _record_event(self, module: str, payload: dict[str, Any]) -> None:
-        event = {"module": module, "timestamp": self._now(), **payload}
-        self._events.append(event)
-        self._last_signals[module] = payload
-        self._prune_events()
+        with self._state_lock:
+            now = self._now()
+            self._prune_events_locked(now)
+            revision = self._touch(now)
+            event = {
+                **dict(payload),
+                "module": module,
+                "timestamp": now,
+                "revision": revision,
+                "updated_at": now.isoformat(),
+            }
+            self._events.append(event)
+            self._last_signals[module] = dict(payload)
+
+    @staticmethod
+    def _source_metadata(event: dict[str, Any]) -> tuple[Any, Any]:
+        """Read source metadata from flat events and legacy nested payloads."""
+        nested_candidates = [
+            event.get("payload"),
+            event.get("extra"),
+            event.get("metadata"),
+        ]
+        nested = [item for item in nested_candidates if isinstance(item, dict)]
+        source = event.get("source")
+        source_id = event.get("source_id")
+
+        for item in nested:
+            if source in (None, ""):
+                source = item.get("source") or item.get("source_type")
+            if source_id in (None, ""):
+                source_id = item.get("source_id") or item.get("stream_id")
+
+        if isinstance(source, dict):
+            source_info = source
+            if source_id in (None, ""):
+                source_id = source_info.get("source_id") or source_info.get("id")
+            source = (
+                source_info.get("source")
+                or source_info.get("type")
+                or source_info.get("name")
+                or source_info.get("label")
+            )
+        return source or None, source_id or None
 
     def _latest_window_events(self) -> dict[str, dict[str, Any] | None]:
         """返回时间窗口内各模块最新事件，避免卡片长期展示过期信号。"""
@@ -65,15 +123,14 @@ class ScenarioFusionService:
             "police": None,
             "owner": None,
         }
-        cutoff = self._window_cutoff()
-        for event in reversed(self._events):
-            if event["timestamp"] < cutoff:
-                break
-            module = event["module"]
-            if module in latest and latest[module] is None:
-                latest[module] = event
-            if all(latest.values()):
-                break
+        with self._state_lock:
+            self._prune_events_locked()
+            for event in reversed(self._events):
+                module = event["module"]
+                if module in latest and latest[module] is None:
+                    latest[module] = dict(event)
+                if all(latest.values()):
+                    break
         return latest
 
     def _fusion_status_hint(self, correlated: dict[str, Any] | None = None) -> str:
@@ -95,25 +152,42 @@ class ScenarioFusionService:
 
     def get_snapshot(self) -> dict[str, Any]:
         """返回多路感知实时快照（供 API / 助手使用）。"""
-        latest = self._latest_window_events()
-        police = latest["police"] or {}
-        owner = latest["owner"] or {}
-        lpr = latest["lpr"] or {}
-        correlated = self._build_correlation_snapshot()
-        plate_labels = normalize_plate_labels(lpr.get("plates"))
+        with self._state_lock:
+            latest = self._latest_window_events()
+            police = latest["police"] or {}
+            owner = latest["owner"] or {}
+            lpr = latest["lpr"] or {}
+            correlated = self._build_correlation_snapshot()
+            plate_labels = normalize_plate_labels(lpr.get("plates"))
+            lpr_source, lpr_source_id = self._source_metadata(lpr)
+            police_source, police_source_id = self._source_metadata(police)
+            owner_source, owner_source_id = self._source_metadata(owner)
+            revision = self._revision
+            updated_at = self._updated_at.isoformat() if self._updated_at else None
+            open_conflicts = sum(
+                1 for conflict in self._recent_conflicts if conflict.get("status") == "open"
+            )
         return {
+            "revision": revision,
+            "updated_at": updated_at,
             "window_seconds": settings.scenario_window_seconds,
             "fusion_status_hint": self._fusion_status_hint(correlated),
             "lpr": {
                 "plate_count": lpr.get("plate_count", 0),
                 "plates": plate_labels,
                 "success": lpr.get("success"),
+                "source": lpr_source,
+                "source_id": lpr_source_id,
+                "revision": lpr.get("revision"),
                 "updated_at": lpr.get("updated_at"),
             },
             "police": {
                 "gesture": police.get("gesture"),
                 "gesture_cn": police.get("gesture_cn"),
                 "confidence": police.get("confidence"),
+                "source": police_source,
+                "source_id": police_source_id,
+                "revision": police.get("revision"),
                 "updated_at": police.get("updated_at"),
             },
             "owner": {
@@ -122,9 +196,12 @@ class ScenarioFusionService:
                 "action": owner.get("action"),
                 "action_cn": owner.get("action_cn"),
                 "confidence": owner.get("confidence"),
+                "source": owner_source,
+                "source_id": owner_source_id,
+                "revision": owner.get("revision"),
                 "updated_at": owner.get("updated_at"),
             },
-            "open_conflicts": sum(1 for c in self._recent_conflicts if c.get("status") == "open"),
+            "open_conflicts": open_conflicts,
             # 仅观察三路识别日志，不改变车主控车行为。
             "owner_suppressed": False,
             "suppress_reason": None,
@@ -177,20 +254,19 @@ class ScenarioFusionService:
         return result
 
     def _build_correlation_snapshot(self) -> dict[str, Any]:
-        cutoff = self._window_cutoff()
-        police = owner = lpr = None
-        for event in reversed(self._events):
-            if event["timestamp"] < cutoff:
-                break
-            mod = event["module"]
-            if mod == "police" and police is None:
-                police = event
-            elif mod == "owner" and owner is None:
-                owner = event
-            elif mod == "lpr" and lpr is None:
-                lpr = event
-            if police and owner and lpr:
-                break
+        with self._state_lock:
+            self._prune_events_locked()
+            police = owner = lpr = None
+            for event in reversed(self._events):
+                mod = event["module"]
+                if mod == "police" and police is None:
+                    police = event
+                elif mod == "owner" and owner is None:
+                    owner = event
+                elif mod == "lpr" and lpr is None:
+                    lpr = event
+                if police and owner and lpr:
+                    break
 
         snapshot: dict[str, Any] = {
             "police_gesture": (police or {}).get("gesture"),
@@ -223,6 +299,7 @@ class ScenarioFusionService:
         plate_count: int = 0,
         plates: list | None = None,
         source: str = "",
+        source_id: str | None = None,
         evaluate_conflicts: bool = True,
     ) -> ScenarioConflict | None:
         payload = {
@@ -230,6 +307,7 @@ class ScenarioFusionService:
             "plate_count": plate_count,
             "plates": normalize_plate_labels(plates) if success and plate_count > 0 else [],
             "source": source,
+            "source_id": source_id,
             "updated_at": self._now().isoformat(),
         }
         self._record_event("lpr", payload)
@@ -245,6 +323,7 @@ class ScenarioFusionService:
         gesture_cn: str | None = None,
         confidence: float = 0.0,
         source: str = "",
+        source_id: str | None = None,
         evaluate_conflicts: bool = True,
     ) -> ScenarioConflict | None:
         if (
@@ -258,6 +337,7 @@ class ScenarioFusionService:
             "gesture_cn": gesture_cn or POLICE_GESTURE_CN.get(gesture, gesture),
             "confidence": confidence,
             "source": source,
+            "source_id": source_id,
             "updated_at": self._now().isoformat(),
         }
         self._record_event("police", payload)
@@ -274,6 +354,7 @@ class ScenarioFusionService:
         action: str | None = None,
         confidence: float = 0.0,
         source: str = "",
+        source_id: str | None = None,
         evaluate_conflicts: bool = True,
     ) -> ScenarioConflict | None:
         has_gesture = bool(gesture and gesture != "no_gesture")
@@ -286,6 +367,7 @@ class ScenarioFusionService:
             "action_cn": OWNER_ACTION_CN.get(action, action) if action else None,
             "confidence": confidence,
             "source": source,
+            "source_id": source_id,
             "updated_at": self._now().isoformat(),
         }
         self._record_event("owner", payload)

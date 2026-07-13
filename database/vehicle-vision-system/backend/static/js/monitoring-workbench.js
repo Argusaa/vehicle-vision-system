@@ -2138,6 +2138,733 @@
     if (last) this.speakAssistant(last.content, { force: true });
   },
 
+  jointModules() {
+    return ['lpr', 'police', 'owner'];
+  },
+
+  jointModuleLabel(module) {
+    return ({ lpr: '车牌识别', police: '交警手势', owner: '车主控车' })[module] || module;
+  },
+
+  jointState() {
+    if (!this.jointRecognition || !(this.jointRecognition.mediaSources instanceof Map)) {
+      this.jointRecognition = {
+        running: false,
+        starting: false,
+        channels: {},
+        mediaSources: new Map(),
+        refreshTimer: null,
+        refreshInFlight: false,
+        refreshDirty: false,
+        lastRefreshAt: 0,
+        runToken: 0,
+      };
+    }
+    if (this.jointRecognition.refreshInFlight == null) this.jointRecognition.refreshInFlight = false;
+    if (this.jointRecognition.refreshDirty == null) this.jointRecognition.refreshDirty = false;
+    return this.jointRecognition;
+  },
+
+  jointRecognitionBlocksLegacyStart() {
+    const state = this.jointState();
+    if (!state.running && !state.starting) return false;
+    alert('联合实时识别正在运行，请先在告警中心点击“全部停止”，再启动单模块视频流。');
+    return true;
+  },
+
+  async initJointRecognition() {
+    const panel = document.getElementById('joint-recognition-panel');
+    if (!panel) return;
+    if (!panel.dataset.initialized) {
+      panel.dataset.initialized = 'true';
+      await this.refreshJointCameraDevices();
+    }
+    this.onJointSourceModeChange();
+  },
+
+  async refreshJointCameraDevices(requestPermission = false) {
+    const panel = document.getElementById('joint-recognition-panel');
+    if (!panel) return [];
+    if (!navigator.mediaDevices?.enumerateDevices) {
+      this.setJointRunState('error', '浏览器不支持摄像头枚举');
+      return [];
+    }
+    let devices = await navigator.mediaDevices.enumerateDevices().catch(() => []);
+    let cameras = devices.filter(device => device.kind === 'videoinput' && device.deviceId);
+    let permissionError = '';
+    if (requestPermission && (!cameras.length || cameras.some(device => !device.label))) {
+      try {
+        const permissionStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        permissionStream.getTracks().forEach(track => track.stop());
+        devices = await navigator.mediaDevices.enumerateDevices().catch(() => devices);
+        cameras = devices.filter(device => device.kind === 'videoinput' && device.deviceId);
+      } catch (error) {
+        const message = this.cameraErrorMessage ? this.cameraErrorMessage(error) : (error?.message || '摄像头授权失败');
+        permissionError = message;
+        this.setJointRunState('error', message);
+      }
+    }
+    this.jointModules().forEach(module => {
+      const select = document.getElementById(`joint-${module}-device`);
+      if (!select) return;
+      const current = select.value;
+      const defaultOption = document.createElement('option');
+      defaultOption.value = '';
+      defaultOption.textContent = '系统默认摄像头';
+      select.replaceChildren(defaultOption);
+      cameras.forEach((device, index) => {
+        const option = document.createElement('option');
+        option.value = device.deviceId;
+        option.textContent = device.label || `摄像头 ${index + 1}`;
+        select.appendChild(option);
+      });
+      if (current && cameras.some(device => device.deviceId === current)) select.value = current;
+    });
+    if (!permissionError && !this.jointState().running && !this.jointState().starting) {
+      this.setJointRunState('idle', cameras.length ? `检测到 ${cameras.length} 个摄像头` : '未检测到本地摄像头');
+    }
+    this.onJointSourceModeChange();
+    return cameras;
+  },
+
+  onJointSourceModeChange() {
+    const mode = document.getElementById('joint-source-mode')?.value || 'shared';
+    const state = this.jointState();
+    if (mode === 'shared') this.syncJointSharedSource();
+    this.jointModules().forEach(module => {
+      const follower = mode === 'shared' && module !== 'lpr';
+      const card = document.querySelector(`.joint-source-card[data-module="${module}"]`);
+      card?.classList.toggle('joint-source-follow', follower);
+      ['kind', 'device', 'url'].forEach(field => {
+        const input = document.getElementById(`joint-${module}-${field}`);
+        if (input) input.disabled = state.running || state.starting || follower;
+      });
+      this.updateJointSourceFields(module);
+    });
+    this.renderJointSourceBindings();
+  },
+
+  syncJointSharedSource() {
+    const sourceKind = document.getElementById('joint-lpr-kind')?.value || 'local';
+    const sourceDevice = document.getElementById('joint-lpr-device')?.value || '';
+    ['police', 'owner'].forEach(module => {
+      const kind = document.getElementById(`joint-${module}-kind`);
+      const device = document.getElementById(`joint-${module}-device`);
+      const url = document.getElementById(`joint-${module}-url`);
+      if (kind) kind.value = sourceKind;
+      if (device) device.value = sourceDevice;
+      // 共享 URL 只保留在主卡，避免含凭据的地址复制到三个可见输入框。
+      if (url) url.value = '';
+      this.updateJointSourceFields(module);
+    });
+  },
+
+  onJointSourceKindChange(module) {
+    this.updateJointSourceFields(module);
+    this.onJointSourceConfigChange(module);
+  },
+
+  onJointSourceConfigChange(module) {
+    if ((document.getElementById('joint-source-mode')?.value || 'shared') === 'shared' && module === 'lpr') {
+      this.syncJointSharedSource();
+    }
+    this.renderJointSourceBindings();
+  },
+
+  updateJointSourceFields(module) {
+    const kind = document.getElementById(`joint-${module}-kind`)?.value || 'local';
+    document.getElementById(`joint-${module}-device-field`)?.classList.toggle('hidden', kind !== 'local');
+    document.getElementById(`joint-${module}-url-field`)?.classList.toggle('hidden', kind !== 'network');
+  },
+
+  readJointSourceConfigs() {
+    const mode = document.getElementById('joint-source-mode')?.value || 'shared';
+    if (mode === 'shared') {
+      this.syncJointSharedSource();
+    }
+    const targetFps = Math.max(1, Math.min(15, Number(document.getElementById('joint-target-fps')?.value || 5)));
+    const configs = this.jointModules().map(module => {
+      const kind = document.getElementById(`joint-${module}-kind`)?.value || 'local';
+      const deviceId = document.getElementById(`joint-${module}-device`)?.value || '';
+      const url = (document.getElementById(`joint-${module}-url`)?.value || '').trim();
+      return { module, kind, deviceId, url, targetFps };
+    });
+    if (mode === 'shared') {
+      const primary = configs[0];
+      return configs.map(config => ({
+        ...config,
+        kind: primary.kind,
+        deviceId: primary.deviceId,
+        url: primary.url,
+      }));
+    }
+    return configs;
+  },
+
+  jointSourceKey(config) {
+    return config.kind === 'network'
+      ? `network:${config.url}`
+      : `local:${config.deviceId || 'default'}`;
+  },
+
+  jointSourceDescription(config) {
+    if (config.kind === 'local') {
+      const select = document.getElementById(`joint-${config.module}-device`);
+      return select?.selectedOptions?.[0]?.textContent || '系统默认摄像头';
+    }
+    if (!config.url) return '等待填写网络流地址';
+    try {
+      const parsed = new URL(config.url);
+      return `${parsed.protocol.replace(':', '').toUpperCase()} · ${parsed.hostname || '网络流'}`;
+    } catch (e) {
+      return '网络流 URL';
+    }
+  },
+
+  jointSourceLabel(sourceId, fallback = '') {
+    if (sourceId) {
+      const channel = Object.values(this.jointState().channels || {}).find(
+        item => item?.config?.sourceId === sourceId,
+      );
+      if (channel?.config) return this.jointSourceDescription(channel.config);
+    }
+    return fallback || sourceId || '';
+  },
+
+  renderJointSourceBindings(configs = null) {
+    if (!document.getElementById('joint-source-grid')) return;
+    const values = configs || this.readJointSourceConfigs();
+    const groups = new Map();
+    values.forEach(config => {
+      const key = this.jointSourceKey(config);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(config.module);
+    });
+    values.forEach(config => {
+      const modules = groups.get(this.jointSourceKey(config)) || [];
+      const shared = modules.length > 1;
+      const card = document.querySelector(`.joint-source-card[data-module="${config.module}"]`);
+      const binding = document.getElementById(`joint-${config.module}-binding`);
+      card?.classList.toggle('same-source', shared);
+      if (!binding) return;
+      const peers = modules.map(module => this.jointModuleLabel(module)).join('、');
+      binding.textContent = shared
+        ? `共享同一来源 · ${peers} · ${this.jointSourceDescription(config)}`
+        : `独立来源 · ${this.jointSourceDescription(config)}`;
+      binding.title = binding.textContent;
+    });
+  },
+
+  setJointRunState(state, text) {
+    const el = document.getElementById('joint-run-state');
+    if (!el) return;
+    el.dataset.state = state;
+    el.textContent = text;
+  },
+
+  setJointChannelState(module, state, text) {
+    const el = document.getElementById(`joint-${module}-status`);
+    if (!el) return;
+    el.dataset.state = state;
+    el.textContent = text;
+  },
+
+  lockJointControls(locked) {
+    const panel = document.getElementById('joint-recognition-panel');
+    panel?.classList.toggle('is-running', locked);
+    ['joint-source-mode', 'joint-target-fps', 'joint-refresh-devices'].forEach(id => {
+      const input = document.getElementById(id);
+      if (input) input.disabled = locked;
+    });
+    const start = document.getElementById('joint-start-btn');
+    const stop = document.getElementById('joint-stop-btn');
+    if (start) start.disabled = locked;
+    if (stop) stop.disabled = !locked;
+    this.onJointSourceModeChange();
+  },
+
+  validateJointConfigs(configs) {
+    for (const config of configs) {
+      if (config.kind !== 'network') continue;
+      if (!config.url) throw new Error(`${this.jointModuleLabel(config.module)}尚未填写网络流地址`);
+      if (!/^(?:rtsp|rtmp|https?):\/\//i.test(config.url)) {
+        throw new Error(`${this.jointModuleLabel(config.module)}仅支持 RTSP、RTMP、HTTP 或 HTTPS 地址`);
+      }
+    }
+  },
+
+  async acquireJointLocalSources(configs, runToken) {
+    const state = this.jointState();
+    const groups = new Map();
+    const localConfigs = configs.filter(config => config.kind === 'local');
+    if (!localConfigs.length) return;
+    if (!navigator.mediaDevices?.getUserMedia) throw new Error('当前浏览器不支持摄像头采集');
+    localConfigs.forEach(config => {
+      const key = this.jointSourceKey(config);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(config);
+    });
+    // 默认设备先打开，取得 activeTrack.deviceId 后，显式选择同一设备的通道可直接复用。
+    const orderedGroups = [...groups.entries()].sort((left, right) => {
+      const leftDefault = left[1][0]?.deviceId ? 1 : 0;
+      const rightDefault = right[1][0]?.deviceId ? 1 : 0;
+      return leftDefault - rightDefault;
+    });
+    const mediaByDevice = new Map();
+    for (const [key, groupedConfigs] of orderedGroups) {
+      if (state.runToken !== runToken) throw new Error('联合识别启动已取消');
+      const requestedDeviceId = groupedConfigs[0].deviceId;
+      let info = requestedDeviceId ? mediaByDevice.get(requestedDeviceId) : null;
+      if (!info) {
+        const preferredVideo = { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 15, max: 15 } };
+        const attempts = requestedDeviceId
+          ? [
+              { video: { ...preferredVideo, deviceId: { exact: requestedDeviceId } }, audio: false },
+              { video: { deviceId: { exact: requestedDeviceId } }, audio: false },
+            ]
+          : [
+              { video: preferredVideo, audio: false },
+              { video: true, audio: false },
+            ];
+        let stream = null;
+        let lastError = null;
+        for (const constraints of attempts) {
+          try {
+            stream = await navigator.mediaDevices.getUserMedia(constraints);
+            if (state.runToken !== runToken) {
+              stream.getTracks().forEach(item => item.stop());
+              throw new Error('联合识别启动已取消');
+            }
+            break;
+          } catch (error) {
+            if (state.runToken !== runToken) throw error;
+            lastError = error;
+          }
+        }
+        if (!stream) throw lastError || new Error('摄像头启动失败');
+        const track = stream.getVideoTracks()[0];
+        const actualDeviceId = track?.getSettings?.().deviceId || requestedDeviceId || key;
+        const existing = mediaByDevice.get(actualDeviceId);
+        if (existing) {
+          stream.getTracks().forEach(item => item.stop());
+          info = existing;
+        } else {
+          info = { stream, actualDeviceId, label: track?.label || '摄像头' };
+          track?.addEventListener?.('ended', () => this.handleJointMediaEnded(info));
+          mediaByDevice.set(actualDeviceId, info);
+        }
+      }
+      state.mediaSources.set(key, info);
+    }
+  },
+
+  async attachJointLocalPreview(config, runToken) {
+    if (config.kind !== 'local') return;
+    const state = this.jointState();
+    if (state.runToken !== runToken) throw new Error('联合识别启动已取消');
+    const info = state.mediaSources.get(this.jointSourceKey(config));
+    if (!info?.stream) throw new Error(`${this.jointModuleLabel(config.module)}摄像头未就绪`);
+    const video = document.getElementById(`joint-${config.module}-video`);
+    const image = document.getElementById(`joint-${config.module}-image`);
+    const placeholder = document.getElementById(`joint-${config.module}-placeholder`);
+    if (video) {
+      video.srcObject = info.stream;
+      video.muted = true;
+      video.playsInline = true;
+      await video.play();
+      if (state.runToken !== runToken) {
+        if (video.srcObject === info.stream) {
+          video.pause();
+          video.srcObject = null;
+        }
+        throw new Error('联合识别启动已取消');
+      }
+    }
+    if (image) image.hidden = true;
+    if (placeholder) placeholder.hidden = true;
+  },
+
+  handleJointMediaEnded(info) {
+    const state = this.jointState();
+    if (!state.running && !state.starting) return;
+    Object.values(state.channels || {}).forEach(channel => {
+      const bound = state.mediaSources.get(this.jointSourceKey(channel.config));
+      if (bound !== info) return;
+      channel.failed = true;
+      this.setJointChannelState(channel.module, 'error', '摄像头已断开');
+    });
+    this.updateJointAggregateState();
+  },
+
+  jointWebSocketUrl(config) {
+    if (config.kind === 'network') {
+      const tokenQuery = config.module === 'owner' && this.token
+        ? `?token=${encodeURIComponent(this.token)}`
+        : '';
+      return `${this.wsBase()}/ws/stream-url/${config.module}${tokenQuery}`;
+    }
+    if (config.module === 'owner') {
+      return `${this.wsBase()}/ws/stream/owner?token=${encodeURIComponent(this.token || '')}`;
+    }
+    return `${this.wsBase()}/ws/stream/${config.module}`;
+  },
+
+  openJointChannel(config) {
+    const state = this.jointState();
+    return new Promise((resolve, reject) => {
+      const channel = {
+        module: config.module,
+        config,
+        ws: null,
+        timer: null,
+        busyTimer: null,
+        busy: false,
+        canvas: document.createElement('canvas'),
+        cancelConnect: null,
+        ready: false,
+        failed: false,
+      };
+      state.channels[config.module] = channel;
+      this.setJointChannelState(config.module, 'connecting', '连接识别服务…');
+      const ws = new WebSocket(this.jointWebSocketUrl(config));
+      channel.ws = ws;
+      let opened = false;
+      let settled = false;
+      const finishResolve = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(connectTimeout);
+        channel.ready = true;
+        channel.failed = false;
+        resolve();
+      };
+      const finishReject = error => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(connectTimeout);
+        channel.failed = true;
+        reject(error);
+      };
+      const connectTimeout = setTimeout(() => {
+        try { ws.close(); } catch (e) {}
+        const stage = opened && config.kind === 'network' ? '网络流首帧等待超时' : '识别服务连接超时';
+        finishReject(new Error(`${this.jointModuleLabel(config.module)}${stage}`));
+      }, config.kind === 'network' ? 15000 : 10000);
+      channel.markReady = finishResolve;
+      channel.failConnect = finishReject;
+      channel.cancelConnect = () => {
+        finishReject(new Error('联合识别启动已取消'));
+      };
+      ws.onopen = () => {
+        opened = true;
+        this.setJointChannelState(config.module, 'connecting', config.kind === 'network' ? '等待网络流首帧…' : '识别服务已连接');
+        try {
+          if (config.kind === 'network') {
+            ws.send(JSON.stringify({
+              type: 'start',
+              url: config.url,
+              source_id: config.sourceId,
+              interval: 1,
+              target_fps: config.targetFps,
+            }));
+          } else {
+            if (config.module === 'owner') ws.send(JSON.stringify({ type: 'ping' }));
+            this.startJointLocalFrames(channel);
+            finishResolve();
+          }
+        } catch (error) {
+          finishReject(new Error(`${this.jointModuleLabel(config.module)}启动失败：${error?.message || error}`));
+          try { ws.close(); } catch (e) {}
+        }
+      };
+      ws.onmessage = event => this.handleJointChannelMessage(channel, event);
+      ws.onerror = () => {
+        channel.failed = true;
+        this.setJointChannelState(config.module, 'error', '识别服务连接失败');
+        if (!channel.ready) {
+          finishReject(new Error(`${this.jointModuleLabel(config.module)}识别服务连接失败`));
+        }
+        this.updateJointAggregateState();
+      };
+      ws.onclose = () => {
+        if (channel.timer) clearInterval(channel.timer);
+        if (channel.busyTimer) clearTimeout(channel.busyTimer);
+        channel.timer = null;
+        channel.busyTimer = null;
+        channel.failed = true;
+        if (state.running) this.setJointChannelState(config.module, 'error', '连接已中断');
+        if (!channel.ready) finishReject(new Error(`${this.jointModuleLabel(config.module)}识别服务已断开`));
+        this.updateJointAggregateState();
+      };
+    });
+  },
+
+  updateJointAggregateState() {
+    const state = this.jointState();
+    if (!state.running || state.starting) return;
+    const channels = this.jointModules().map(module => state.channels[module]).filter(Boolean);
+    const failed = channels.filter(channel => channel.failed || channel.ws?.readyState !== WebSocket.OPEN);
+    if (!failed.length && channels.length === this.jointModules().length) {
+      const sourceCount = new Set(channels.map(channel => channel.config.sourceId)).size;
+      this.setJointRunState('running', `三路识别运行中 · ${sourceCount} 个来源`);
+      return;
+    }
+    this.setJointRunState('error', `部分通道已中断（${failed.length}/${this.jointModules().length}），请停止后重试`);
+  },
+
+  startJointLocalFrames(channel) {
+    const { config, ws, canvas } = channel;
+    const video = document.getElementById(`joint-${config.module}-video`);
+    if (!video) return;
+    const intervalMs = Math.max(67, Math.round(1000 / config.targetFps));
+    const context = canvas.getContext('2d');
+    channel.timer = setInterval(() => {
+      if (!context || video.readyState < 2 || ws.readyState !== WebSocket.OPEN) return;
+      if (channel.busy) return;
+      const sourceWidth = video.videoWidth || 640;
+      const sourceHeight = video.videoHeight || 480;
+      const scale = Math.min(1, 720 / sourceWidth);
+      canvas.width = Math.max(1, Math.round(sourceWidth * scale));
+      canvas.height = Math.max(1, Math.round(sourceHeight * scale));
+      context.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const data = canvas.toDataURL('image/jpeg', config.module === 'owner' ? .62 : .72).split(',')[1];
+      if (!data) return;
+      channel.busy = true;
+      if (channel.busyTimer) clearTimeout(channel.busyTimer);
+      channel.busyTimer = setTimeout(() => { channel.busy = false; }, 5000);
+      try {
+        ws.send(JSON.stringify({
+          type: 'frame',
+          data,
+          source_id: config.sourceId,
+          target_fps: config.targetFps,
+        }));
+      } catch (error) {
+        channel.busy = false;
+        channel.failed = true;
+        this.setJointChannelState(config.module, 'error', '帧发送失败');
+        this.updateJointAggregateState();
+      }
+    }, intervalMs);
+  },
+
+  handleJointChannelMessage(channel, event) {
+    let message;
+    try {
+      message = JSON.parse(event.data || '{}');
+    } catch (e) {
+      this.setJointChannelState(channel.module, 'error', '返回数据格式错误');
+      return;
+    }
+    channel.busy = false;
+    if (channel.busyTimer) clearTimeout(channel.busyTimer);
+    channel.busyTimer = null;
+    if (message.type === 'status' || message.type === 'pong') {
+      channel.markReady?.();
+      channel.failed = false;
+      this.setJointChannelState(channel.module, 'connected', '实时识别中');
+      this.updateJointAggregateState();
+      return;
+    }
+    if (message.type === 'result') {
+      channel.markReady?.();
+      channel.failed = false;
+      this.setJointChannelState(channel.module, 'connected', '实时识别中');
+      this.renderJointRecognitionResult(channel.module, message.data || {});
+      this.scheduleScenarioFusionRefresh(550);
+      this.updateJointAggregateState();
+      return;
+    }
+    if (message.type === 'confirmed') {
+      this.renderJointRecognitionResult('owner', message.data || {}, '操作已确认');
+      this.scheduleScenarioFusionRefresh(550);
+      return;
+    }
+    if (message.type === 'error' || message.type === 'frame_error') {
+      const text = message.message || '识别失败';
+      channel.failed = true;
+      if (!channel.ready) channel.failConnect?.(new Error(`${this.jointModuleLabel(channel.module)}：${text}`));
+      this.setJointChannelState(channel.module, 'error', '识别异常');
+      const result = document.getElementById(`joint-${channel.module}-result`);
+      if (result) result.textContent = `识别异常：${text}`;
+      this.updateJointAggregateState();
+    }
+  },
+
+  renderJointRecognitionResult(module, data, prefix = '') {
+    const result = document.getElementById(`joint-${module}-result`);
+    if (!result) return;
+    const now = new Date().toLocaleTimeString();
+    let title = prefix;
+    let detail = '';
+    if (module === 'lpr') {
+      const plates = Array.isArray(data.plates) ? data.plates : [];
+      const labels = plates.map(plate => plate?.plate_number || plate?.plate || '').filter(Boolean);
+      title = labels.length ? labels.join('、') : '当前帧未识别到车牌';
+      detail = labels.length ? `检测到 ${data.plate_count ?? labels.length} 个车牌` : '持续识别中';
+    } else if (module === 'police') {
+      title = data.gesture_cn || data.gesture || '当前无明确交警手势';
+      detail = data.confidence != null ? `置信度 ${(Number(data.confidence) * 100).toFixed(0)}%` : '持续识别中';
+    } else {
+      title = data.gesture_cn || data.gesture || prefix || '当前无明确车主手势';
+      const action = data.action ? (this.ownerActionLabel ? this.ownerActionLabel(data.action) : data.action) : '';
+      const confidence = data.confidence != null ? `置信度 ${(Number(data.confidence) * 100).toFixed(0)}%` : '';
+      detail = [action ? `动作：${action}` : '', confidence].filter(Boolean).join(' · ') || '持续识别中';
+    }
+    result.innerHTML = `<strong>${this.escHtml(title)}</strong><br><span>${this.escHtml(detail)}</span><br><small>更新于 ${this.escHtml(now)}</small>`;
+    const image = document.getElementById(`joint-${module}-image`);
+    const placeholder = document.getElementById(`joint-${module}-placeholder`);
+    if (image && data.annotated_image) {
+      image.src = `data:image/jpeg;base64,${data.annotated_image}`;
+      image.hidden = false;
+    }
+    if (placeholder) placeholder.hidden = true;
+  },
+
+  async startJointRecognition() {
+    const state = this.jointState();
+    if (state.running || state.starting) return;
+    const runToken = ++state.runToken;
+    const configs = this.readJointSourceConfigs();
+    try {
+      if (this.streamModule || this.lprVideoMode) {
+        throw new Error('已有单模块视频或摄像头识别正在运行，请先停止后再启动联合识别。');
+      }
+      this.validateJointConfigs(configs);
+      state.starting = true;
+      this.lockJointControls(true);
+      this.setJointRunState('starting', '正在启动三路识别…');
+      const sourceIds = new Map();
+      configs.forEach(config => {
+        const key = this.jointSourceKey(config);
+        if (!sourceIds.has(key)) sourceIds.set(key, `joint-${Date.now().toString(36)}-${sourceIds.size + 1}`);
+        config.sourceId = sourceIds.get(key);
+      });
+      this.renderJointSourceBindings(configs);
+      await this.acquireJointLocalSources(configs, runToken);
+      if (state.runToken !== runToken) return;
+      for (const config of configs) {
+        await this.attachJointLocalPreview(config, runToken);
+        if (state.runToken !== runToken) return;
+      }
+      await Promise.all(configs.map(config => this.openJointChannel(config)));
+      if (state.runToken !== runToken) return;
+      state.starting = false;
+      state.running = true;
+      this.updateJointAggregateState();
+    } catch (error) {
+      if (state.runToken !== runToken) return;
+      const cameraErrorNames = new Set([
+        'NotAllowedError', 'PermissionDeniedError', 'NotFoundError', 'DevicesNotFoundError',
+        'NotReadableError', 'OverconstrainedError', 'ConstraintNotSatisfiedError',
+      ]);
+      const message = cameraErrorNames.has(error?.name) && this.cameraErrorMessage
+        ? this.cameraErrorMessage(error)
+        : (error?.message || String(error));
+      this.stopJointRecognition({ failed: true, keepRunToken: true });
+      this.setJointRunState('error', message);
+      const firstResult = document.getElementById('joint-lpr-result');
+      if (firstResult) firstResult.textContent = `联合识别启动失败：${message}`;
+    }
+  },
+
+  stopJointRecognition(options = {}) {
+    const state = this.jointState();
+    if (!options.keepRunToken) state.runToken += 1;
+    Object.values(state.channels || {}).forEach(channel => {
+      if (channel.timer) clearInterval(channel.timer);
+      if (channel.busyTimer) clearTimeout(channel.busyTimer);
+      if (channel.cancelConnect) channel.cancelConnect();
+      if (channel.ws) {
+        channel.ws.onopen = null;
+        channel.ws.onmessage = null;
+        channel.ws.onerror = null;
+        channel.ws.onclose = null;
+        try { channel.ws.close(); } catch (e) {}
+      }
+    });
+    const uniqueStreams = new Set();
+    state.mediaSources.forEach(info => {
+      if (info?.stream) uniqueStreams.add(info.stream);
+    });
+    uniqueStreams.forEach(stream => stream.getTracks().forEach(track => track.stop()));
+    state.channels = {};
+    state.mediaSources.clear();
+    if (state.refreshTimer) clearTimeout(state.refreshTimer);
+    state.refreshTimer = null;
+    state.refreshQueuedAt = 0;
+    state.running = false;
+    state.starting = false;
+    this.jointModules().forEach(module => {
+      const video = document.getElementById(`joint-${module}-video`);
+      const image = document.getElementById(`joint-${module}-image`);
+      const placeholder = document.getElementById(`joint-${module}-placeholder`);
+      if (video) { video.pause(); video.srcObject = null; }
+      if (image) { image.hidden = true; image.removeAttribute('src'); }
+      if (placeholder) { placeholder.hidden = false; placeholder.textContent = '等待启动预览'; }
+      this.setJointChannelState(module, 'idle', '待启动');
+    });
+    this.lockJointControls(false);
+    if (!options.failed) this.setJointRunState('idle', '已停止');
+  },
+
+  scheduleScenarioFusionRefresh(delay = 550) {
+    const state = this.jointState();
+    const now = Date.now();
+    if (!state.refreshQueuedAt) state.refreshQueuedAt = now;
+    if (state.refreshTimer) clearTimeout(state.refreshTimer);
+    const elapsed = now - state.refreshQueuedAt;
+    const wait = elapsed >= 800 ? 0 : Math.min(Math.max(300, delay), 800 - elapsed);
+    state.refreshTimer = setTimeout(() => {
+      state.refreshTimer = null;
+      state.refreshQueuedAt = 0;
+      this.runScenarioFusionRefresh();
+    }, wait);
+  },
+
+  async runScenarioFusionRefresh() {
+    const state = this.jointState();
+    if (state.refreshInFlight) {
+      state.refreshDirty = true;
+      return;
+    }
+    if (this.currentView !== 'alerts' || !this.loadScenarioFusion) return;
+    state.refreshInFlight = true;
+    state.refreshDirty = false;
+    try {
+      state.lastRefreshAt = Date.now();
+      await this.loadScenarioFusion();
+    } finally {
+      state.refreshInFlight = false;
+      if (state.refreshDirty) {
+        state.refreshDirty = false;
+        this.scheduleScenarioFusionRefresh(300);
+      }
+    }
+  },
+
+  connectAlertScenarioLogStream() {
+    if (this.alertScenarioLogSse || !document.getElementById('view-alerts')) return;
+    const source = new EventSource(this.apiUrl('/api/monitor/logs/stream'));
+    this.alertScenarioLogSse = source;
+    source.onmessage = event => {
+      let data;
+      try { data = JSON.parse(event.data || '{}'); } catch (e) { return; }
+      const category = data.category || data.data?.category;
+      if (['lpr', 'police_gesture', 'owner_gesture'].includes(category)) {
+        this.scheduleScenarioFusionRefresh(550);
+      }
+    };
+    // EventSource 会自动重连；仅在离开告警页时主动关闭。
+    source.onerror = () => {};
+  },
+
+  disconnectAlertScenarioLogStream() {
+    if (!this.alertScenarioLogSse) return;
+    this.alertScenarioLogSse.close();
+    this.alertScenarioLogSse = null;
+  },
+
   isIdleDrivingAdvice(advice) {
     if (!advice || !advice.advice) return true;
     const text = String(advice.advice).trim();
@@ -2212,6 +2939,9 @@
     const ownerSub = owner.action
       ? (owner.gesture_cn || owner.gesture || '—')
       : (owner.gesture_cn || owner.gesture ? '未触发控车动作' : '—');
+    const lprSource = this.jointSourceLabel(lpr.source_id, lpr.source);
+    const policeSource = this.jointSourceLabel(police.source_id, police.source);
+    const ownerSource = this.jointSourceLabel(owner.source_id, owner.source);
     const suppressed = snapshot.owner_suppressed
       ? `<span class="scenario-badge warning">车主动作已抑制</span>`
       : '';
@@ -2219,17 +2949,17 @@
       <div class="scenario-signal-card">
         <span class="scenario-signal-label">车牌</span>
         <strong>${lpr.plate_count || 0} 个</strong>
-        <small>${this.escHtml(plates)}</small>
+        <small>${this.escHtml(plates)}${lprSource ? ` · ${this.escHtml(lprSource)}` : ''}</small>
       </div>
       <div class="scenario-signal-card">
         <span class="scenario-signal-label">交警</span>
         <strong>${this.escHtml(police.gesture_cn || police.gesture || '—')}</strong>
-        <small>${police.confidence != null ? (police.confidence * 100).toFixed(0) + '%' : '—'}</small>
+        <small>${police.confidence != null ? (police.confidence * 100).toFixed(0) + '%' : '—'}${policeSource ? ` · ${this.escHtml(policeSource)}` : ''}</small>
       </div>
       <div class="scenario-signal-card">
         <span class="scenario-signal-label">车主</span>
         <strong>${this.escHtml(ownerMain)}</strong>
-        <small>${this.escHtml(ownerSub)}</small>
+        <small>${this.escHtml(ownerSub)}${ownerSource ? ` · ${this.escHtml(ownerSource)}` : ''}</small>
       </div>
       <div class="scenario-signal-card scenario-meta-card">
         <span class="scenario-signal-label">窗口</span>
@@ -2243,7 +2973,7 @@
     const el = document.getElementById('scenario-driving-advice');
     if (!el || !advice) return;
     const modeLabel = advice.mode === 'llm' ? 'LLM 融合推理' : '规则模板';
-    const priority = advice.priority || 'normal';
+    const priority = ['high', 'medium', 'normal'].includes(advice.priority) ? advice.priority : 'normal';
     const signals = advice.signals_summary || '—';
     el.innerHTML = `
       <div class="scenario-advice-card ${priority}">
@@ -2277,12 +3007,15 @@
     }
     el.innerHTML = items.map(c => {
       const status = c.status === 'open' ? '未处理' : '已处理';
-      const sev = c.severity || 'warning';
+      const sev = ['critical', 'warning', 'info'].includes(c.severity) ? c.severity : 'warning';
+      const conflictId = Number(c.id);
+      const alertId = Number(c.alert_id);
       const resolveBtn = c.status === 'open'
-        ? `<button class="btn small" onclick="App.resolveScenarioConflict(${c.id})">确认处置</button>`
+        && Number.isSafeInteger(conflictId)
+        ? `<button class="btn small" onclick="App.resolveScenarioConflict(${conflictId})">确认处置</button>`
         : '';
-      const alertLink = c.alert_id
-        ? `<button class="btn small" onclick="App.viewReplay(${c.alert_id})">查看告警</button>`
+      const alertLink = Number.isSafeInteger(alertId) && alertId > 0
+        ? `<button class="btn small" onclick="App.viewReplay(${alertId})">查看告警</button>`
         : '';
       return `<div class="scenario-conflict-card ${sev}">
         <div class="scenario-conflict-head">

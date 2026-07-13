@@ -35,6 +35,7 @@ async def record_lpr_recognition(
     *,
     success: bool,
     source: str,
+    source_id: str | None = None,
     plate_count: int = 0,
     plates: list | None = None,
     model_available: bool | None = None,
@@ -48,6 +49,8 @@ async def record_lpr_recognition(
         "plate_count": plate_count,
         "success": success,
     }
+    if source_id is not None:
+        detail["source_id"] = source_id
     if plates is not None:
         detail["plates"] = plates
     if model_available is not None:
@@ -79,6 +82,7 @@ async def record_lpr_recognition(
         plate_count=plate_count,
         plates=plates,
         source=source,
+        source_id=source_id,
         evaluate_conflicts=False,
     ))
 
@@ -87,6 +91,7 @@ async def record_police_recognition(
     db: Session,
     *,
     source: str,
+    source_id: str | None = None,
     gesture_cn: str | None = None,
     confidence: float = 0.0,
     gesture: str | None = None,
@@ -99,6 +104,8 @@ async def record_police_recognition(
         "source": source,
         "confidence": confidence,
     }
+    if source_id is not None:
+        detail["source_id"] = source_id
     if gesture:
         detail["gesture"] = gesture
     if gesture_cn:
@@ -125,6 +132,7 @@ async def record_police_recognition(
             gesture_cn=gesture_cn,
             confidence=confidence,
             source=source,
+            source_id=source_id,
             evaluate_conflicts=False,
         ))
 
@@ -133,6 +141,7 @@ async def record_owner_recognition(
     db: Session,
     *,
     source: str,
+    source_id: str | None = None,
     gesture_cn: str | None = None,
     confidence: float = 0.0,
     gesture: str | None = None,
@@ -149,6 +158,8 @@ async def record_owner_recognition(
         "source": source,
         "confidence": confidence,
     }
+    if source_id is not None:
+        detail["source_id"] = source_id
     if gesture:
         detail["gesture"] = gesture
     if gesture_cn:
@@ -193,6 +204,7 @@ async def record_owner_recognition(
             action=action,
             confidence=confidence,
             source=source,
+            source_id=source_id,
             evaluate_conflicts=False,
         ))
 

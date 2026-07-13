@@ -20,6 +20,7 @@ from app.services.alert_agent import alert_agent
 from app.services.llm_service import llm_service
 from app.services.lpr_service import lpr_service
 from app.services.lpr_video_service import lpr_video_service
+from app.services.network_stream_hub import network_stream_hub
 from app.services.police_gesture_service import police_gesture_service
 from app.utils.logger import get_logger, write_log, write_system_log
 
@@ -97,7 +98,11 @@ async def lifespan(app: FastAPI):
     finally:
         db.close()
     await alert_agent.start_patrol_loop(SessionLocal)
-    yield
+    try:
+        yield
+    finally:
+        await websocket.cancel_stream_background_tasks()
+        network_stream_hub.close_all()
 
 
 app = FastAPI(

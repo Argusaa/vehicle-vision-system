@@ -380,6 +380,12 @@ async def gesture_websocket(websocket: WebSocket, db: Session = Depends(get_db))
             user_id = None
 
     await websocket.accept()
+    session_id = f"owner-legacy-{uuid.uuid4().hex}"
+    if not owner_gesture_service.acquire_realtime_session(session_id):
+        await websocket.send_json({"type": "error", "message": "车主实时识别已在其他通道运行"})
+        await websocket.close(code=1008)
+        return
+    _owner_stream_last_signature = None
     try:
         while True:
             raw = await websocket.receive_text()
@@ -469,3 +475,5 @@ async def gesture_websocket(websocket: WebSocket, db: Session = Depends(get_db))
             await websocket.send_json({"type": "error", "message": str(exc)})
         except Exception:
             pass
+    finally:
+        owner_gesture_service.release_realtime_session(session_id)

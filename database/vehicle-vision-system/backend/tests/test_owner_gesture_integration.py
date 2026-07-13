@@ -4,6 +4,7 @@ from app.routers.owner_gesture import router as owner_router
 from app.services.owner_gesture_service import (
     OWNER_GESTURES,
     OwnerGestureService,
+    owner_gesture_service,
 )
 
 
@@ -30,6 +31,20 @@ def test_owner_gesture_mapping_covers_eight_actions():
         "thumb_down": "hang_up",
         "wave": "go_home",
     }
+
+
+def test_only_one_realtime_owner_session_can_mutate_shared_gesture_state():
+    first = "owner-test-first"
+    second = "owner-test-second"
+    owner_gesture_service.release_realtime_session(first)
+    owner_gesture_service.release_realtime_session(second)
+    assert owner_gesture_service.acquire_realtime_session(first)
+    try:
+        assert not owner_gesture_service.acquire_realtime_session(second)
+    finally:
+        owner_gesture_service.release_realtime_session(first)
+    assert owner_gesture_service.acquire_realtime_session(second)
+    owner_gesture_service.release_realtime_session(second)
 
 
 def test_point_direction_matches_unmirrored_camera_frame():

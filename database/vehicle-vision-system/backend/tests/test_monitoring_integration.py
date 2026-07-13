@@ -126,7 +126,7 @@ def test_monitoring_frontend_exposes_structured_alerts_and_chinese_logs():
     js += (BACKEND_DIR / "static" / "js" / "monitoring-workbench.js").read_text(encoding="utf-8")
     assert 'id="assistant-context-bar"' in html
     assert 'id="test-alert-type"' in html
-    assert 'monitoring-workbench.js?v=20260713-scenario3' in html
+    assert 'monitoring-workbench.js?v=20260713-joint1' in html
     assert '<option value="警告">警告</option>' in html
     assert "severity_assessment" in js
     assert "focusedAlertId" in js
@@ -141,6 +141,8 @@ def test_complete_monitoring_workbench_assets_and_controls_are_present():
         "assistant-bot", "agent-activity", "alert-analytics-panel",
         "replay-player", "assistant-context-bar", "scenario-fusion-panel",
         "scenario-snapshot", "scenario-driving-advice", "scenario-conflicts",
+        "joint-recognition-panel", "joint-source-mode", "joint-start-btn",
+        "joint-lpr-result", "joint-police-result", "joint-owner-result",
     ):
         assert f'id="{element_id}"' in html
     for marker in (
@@ -152,6 +154,61 @@ def test_complete_monitoring_workbench_assets_and_controls_are_present():
     assert ".assistant-panel" in css
     assert ".timeline" in css
     assert ".log-stats" in css
+
+
+def test_joint_recognition_frontend_keeps_independent_runtime_and_source_fanout():
+    html = (BACKEND_DIR / "static" / "index.html").read_text(encoding="utf-8")
+    app = (BACKEND_DIR / "static" / "js" / "app.js").read_text(encoding="utf-8")
+    workbench = (BACKEND_DIR / "static" / "js" / "monitoring-workbench.js").read_text(encoding="utf-8")
+
+    assert "jointRecognition: {" in app
+    assert "channels: {}" in app
+    assert "mediaSources: new Map()" in app
+    joint_runtime = workbench[workbench.index("jointModules()") : workbench.index("isIdleDrivingAdvice")]
+    assert "if (this.streamModule || this.lprVideoMode)" in joint_runtime
+    assert "this.streamModule =" not in joint_runtime
+    assert "this.wsStream" not in joint_runtime
+
+    assert 'value="shared">三模块共享同一来源' in html
+    assert 'value="independent">三模块分别配置' in html
+    assert "navigator.mediaDevices.getUserMedia" in workbench
+    assert "for (const constraints of attempts)" in workbench
+    assert "mediaByDevice.get(requestedDeviceId)" in workbench
+    assert "state.mediaSources.set(key, info)" in workbench
+    assert "async acquireJointLocalSources(configs, runToken)" in workbench
+    assert "async attachJointLocalPreview(config, runToken)" in workbench
+    assert "if (state.runToken !== runToken)" in workbench
+    assert "stream.getTracks().forEach(item => item.stop())" in workbench
+    assert "if (video.srcObject === info.stream)" in workbench
+    assert "Promise.all(configs.map(config => this.openJointChannel(config)))" in workbench
+    assert "if (channel.busy) return" in workbench
+    assert "channel.markReady = finishResolve" in workbench
+    assert "等待网络流首帧" in workbench
+    assert "jointRecognitionBlocksLegacyStart" in app
+
+    assert "/ws/stream-url/${config.module}" in workbench
+    assert "/ws/stream/owner?token=" in workbench
+    assert "source_id: config.sourceId" in workbench
+    assert "target_fps: config.targetFps" in workbench
+    assert "jointSourceLabel(lpr.source_id, lpr.source)" in workbench
+    assert "refreshInFlight" in workbench
+    assert "runScenarioFusionRefresh" in workbench
+
+
+def test_alert_center_has_dedicated_log_stream_for_live_scenario_updates():
+    app = (BACKEND_DIR / "static" / "js" / "app.js").read_text(encoding="utf-8")
+    workbench = (BACKEND_DIR / "static" / "js" / "monitoring-workbench.js").read_text(encoding="utf-8")
+
+    assert "alertScenarioLogSse: null" in app
+    assert "connectAlertScenarioLogStream" in app
+    assert "disconnectAlertScenarioLogStream" in app
+    assert "new EventSource(this.apiUrl('/api/monitor/logs/stream'))" in workbench
+    assert "['lpr', 'police_gesture', 'owner_gesture'].includes(category)" in workbench
+    assert "scheduleScenarioFusionRefresh(550)" in workbench
+    assert "this.alertScenarioLogSse" in workbench
+    assert "this.logSseSource" not in workbench[
+        workbench.index("connectAlertScenarioLogStream") : workbench.index("isIdleDrivingAdvice")
+    ]
 
 
 def test_assistant_api_reports_real_llm_or_template_fallback_mode():

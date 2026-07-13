@@ -1,7 +1,8 @@
 """三路感知融合驾驶建议与被动日志聚合测试。"""
 
 import asyncio
-from datetime import timedelta
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta
 
 from app.config import settings
 from app.services.llm_service import LLMService
@@ -120,6 +121,121 @@ def test_snapshot_drops_signals_outside_the_configured_window():
     snapshot = service.get_snapshot()
     assert snapshot["lpr"]["plate_count"] == 0
     assert snapshot["lpr"]["plates"] == []
+
+
+def test_snapshot_tracks_three_sources_revision_and_window_expiry():
+    class ClockedScenarioFusionService(ScenarioFusionService):
+        def __init__(self):
+            self.current_time = datetime(2026, 7, 13, 8, 0, 0)
+            super().__init__()
+
+        def _now(self):
+            return self.current_time
+
+    service = ClockedScenarioFusionService()
+    initial = service.get_snapshot()
+    assert initial["revision"] == 0
+    assert initial["updated_at"] is None
+
+    async def collect_signals():
+        await service.ingest_lpr(
+            None,
+            success=True,
+            plate_count=1,
+            plates=["粤B12345"],
+            source="RTSP流",
+            source_id="rtsp://camera-a/live",
+            evaluate_conflicts=False,
+        )
+        service.current_time += timedelta(seconds=1)
+        await service.ingest_police(
+            None,
+            gesture="stop",
+            gesture_cn="停止",
+            confidence=0.95,
+            source="DroidCam",
+            source_id="droidcam://phone-1",
+            evaluate_conflicts=False,
+        )
+        service.current_time += timedelta(seconds=1)
+        await service.ingest_owner(
+            None,
+            gesture="fist",
+            gesture_cn="握拳",
+            action="confirm",
+            confidence=0.92,
+            source="USB摄像头",
+            source_id="usb://camera-0",
+            evaluate_conflicts=False,
+        )
+
+    asyncio.run(collect_signals())
+
+    snapshot = service.get_snapshot()
+    assert snapshot["revision"] == 3
+    assert snapshot["updated_at"] == service.current_time.isoformat()
+    assert snapshot["lpr"]["source"] == "RTSP流"
+    assert snapshot["lpr"]["source_id"] == "rtsp://camera-a/live"
+    assert snapshot["lpr"]["revision"] == 1
+    assert snapshot["police"]["source"] == "DroidCam"
+    assert snapshot["police"]["source_id"] == "droidcam://phone-1"
+    assert snapshot["police"]["revision"] == 2
+    assert snapshot["owner"]["source"] == "USB摄像头"
+    assert snapshot["owner"]["source_id"] == "usb://camera-0"
+    assert snapshot["owner"]["revision"] == 3
+    assert snapshot["lpr"]["updated_at"] < snapshot["police"]["updated_at"]
+    assert snapshot["police"]["updated_at"] < snapshot["owner"]["updated_at"]
+
+    service.current_time += timedelta(seconds=settings.scenario_window_seconds + 1)
+    expired = service.get_snapshot()
+    assert expired["revision"] == 4
+    assert expired["updated_at"] == service.current_time.isoformat()
+    for module in ("lpr", "police", "owner"):
+        assert expired[module]["source"] is None
+        assert expired[module]["source_id"] is None
+        assert expired[module]["revision"] is None
+        assert expired[module]["updated_at"] is None
+
+
+def test_snapshot_reads_source_metadata_from_nested_payloads():
+    service = ScenarioFusionService()
+    service._record_event("lpr", {
+        "success": True,
+        "plate_count": 1,
+        "plates": ["粤B12345"],
+        "payload": {
+            "source_type": "network_camera",
+            "stream_id": "shared-stream-1",
+        },
+        "updated_at": service._now().isoformat(),
+    })
+
+    card = service.get_snapshot()["lpr"]
+    assert card["source"] == "network_camera"
+    assert card["source_id"] == "shared-stream-1"
+
+
+def test_parallel_event_updates_keep_revisions_unique_and_monotonic():
+    service = ScenarioFusionService()
+
+    def record(index: int):
+        service._record_event("lpr", {
+            "success": True,
+            "plate_count": 1,
+            "plates": [f"TEST{index:02d}"],
+            "source": "shared_camera",
+            "source_id": f"camera-{index}",
+        })
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        list(executor.map(record, range(64)))
+
+    with service._state_lock:
+        revisions = [event["revision"] for event in service._events]
+    assert sorted(revisions) == list(range(1, 65))
+    snapshot = service.get_snapshot()
+    assert snapshot["revision"] == 64
+    assert snapshot["lpr"]["revision"] == 64
 
 
 def test_llm_priority_is_restricted_to_frontend_safe_values():

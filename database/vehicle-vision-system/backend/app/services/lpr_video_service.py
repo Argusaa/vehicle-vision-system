@@ -30,6 +30,7 @@ class LprVideoService:
     def __init__(self) -> None:
         self._error: str | None = None
         self._runtime = None
+        self._runtime_lock = threading.RLock()
         self._yolo_path: str | None = None
         self._lpr_path: str | None = None
         self._stream_jobs: dict[str, dict[str, Any]] = {}
@@ -43,18 +44,19 @@ class LprVideoService:
         return cfg.yolo_model, cfg.lpr_model
 
     def _load_runtime(self):
-        if self._runtime is not None and self._error is None:
-            return
-        if self._error is not None:
-            return
-        try:
-            from runtime_api import YoloLprRuntime, YoloLprConfig
-            yolo_path, lpr_path = self._resolve_weights()
-            self._yolo_path, self._lpr_path = yolo_path, lpr_path
-            self._runtime = YoloLprRuntime(YoloLprConfig(yolo_model=yolo_path, lpr_model=lpr_path))
-        except Exception as exc:
-            self._error = str(exc)
-            logger.exception("加载 yolo_lprnet_assets runtime 失败: %s", exc)
+        with self._runtime_lock:
+            if self._runtime is not None and self._error is None:
+                return
+            if self._error is not None:
+                return
+            try:
+                from runtime_api import YoloLprRuntime, YoloLprConfig
+                yolo_path, lpr_path = self._resolve_weights()
+                self._yolo_path, self._lpr_path = yolo_path, lpr_path
+                self._runtime = YoloLprRuntime(YoloLprConfig(yolo_model=yolo_path, lpr_model=lpr_path))
+            except Exception as exc:
+                self._error = str(exc)
+                logger.exception("加载 yolo_lprnet_assets runtime 失败: %s", exc)
 
     def model_available(self) -> bool:
         self._load_runtime()
@@ -119,6 +121,13 @@ class LprVideoService:
         return filtered
 
     def recognize_frame(self, frame: np.ndarray, frame_index: int = 0) -> dict[str, Any]:
+        # A single runtime instance is shared by file, browser and network flows.
+        # Serialize model loading/inference because the underlying Torch runtime
+        # and GPU context are not safe to enter concurrently.
+        with self._runtime_lock:
+            return self._recognize_frame_locked(frame, frame_index)
+
+    def _recognize_frame_locked(self, frame: np.ndarray, frame_index: int = 0) -> dict[str, Any]:
         self._load_runtime()
         if not self.model_available():
             return {
