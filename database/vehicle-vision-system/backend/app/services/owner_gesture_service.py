@@ -70,8 +70,8 @@ HAND_CONNECTIONS = [
 class OwnerGestureService:
     """车主手势控车: MediaPipe Hand Landmarker + 启发式规则 + 持续时间/复合确认防抖"""
 
-    # 前置摄像头按镜面交互理解左右，统一校正静态指向和横向滑动方向。
-    MIRROR_POINT_DIRECTIONS = True
+    # 输入帧统一按图像坐标判断方向；驾驶员前置实时摄像头由前端在送帧时镜像。
+    MIRROR_POINT_DIRECTIONS = False
     REALTIME_DYNAMIC_WINDOW_SEC = 1.0
     REALTIME_DYNAMIC_MIN_SCORE = {
         "wave": 1.05,
@@ -107,7 +107,8 @@ class OwnerGestureService:
         "circle": 0.22,
         "point_left": 0.18,
         "point_right": 0.18,
-        "wave": 0.12,
+        # 挥手本身已经通过运动轨迹确认；实时流只有约 5 FPS，不能再等待下一帧。
+        "wave": 0.0,
         "thumb_up": 0.22,
         "thumb_down": 0.22,
     }
@@ -117,7 +118,7 @@ class OwnerGestureService:
         "circle": 0.24,
         "point_left": 0.20,
         "point_right": 0.20,
-        "wave": 0.10,
+        "wave": 0.0,
         "thumb_up": 0.22,
         "thumb_down": 0.22,
     }

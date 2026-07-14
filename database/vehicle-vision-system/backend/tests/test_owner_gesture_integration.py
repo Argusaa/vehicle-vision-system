@@ -52,11 +52,11 @@ def test_only_one_realtime_owner_session_can_mutate_shared_gesture_state():
     owner_gesture_service.release_realtime_session(second)
 
 
-def test_point_direction_matches_mirrored_driver_interaction():
+def test_point_direction_uses_normalized_input_frame_coordinates():
     service = _service_without_models()
-    assert service.MIRROR_POINT_DIRECTIONS is True
-    assert service._normalize_point_direction("point_left") == "point_right"
-    assert service._normalize_point_direction("point_right") == "point_left"
+    assert service.MIRROR_POINT_DIRECTIONS is False
+    assert service._normalize_point_direction("point_left") == "point_left"
+    assert service._normalize_point_direction("point_right") == "point_right"
 
 
 def test_horizontal_open_palm_sweep_is_recognized_as_wave():
@@ -331,6 +331,23 @@ def test_realtime_gesture_requires_stable_candidate_and_bridges_short_gap():
     assert debug["hold"] == "keep_confirmed"
 
 
+def test_realtime_wave_is_confirmed_on_its_first_motion_hit():
+    service = _service_without_models()
+    service._realtime_candidate_gesture = "no_gesture"
+    service._realtime_candidate_confidence = 0.0
+    service._realtime_candidate_since = 0.0
+    service._realtime_confirmed_gesture = "no_gesture"
+    service._realtime_confirmed_confidence = 0.0
+    service._realtime_confirmed_at = 0.0
+
+    gesture, confidence, debug = service._apply_realtime_confirmation("wave", 0.86, 10.0)
+
+    assert gesture == "wave"
+    assert confidence == 0.86
+    assert debug["required"] == 0.0
+    assert debug["hold"] == "candidate_confirmed"
+
+
 def test_owner_public_routes_and_frontend_contract_are_present():
     paths = {route.path for route in owner_router.routes if hasattr(route, "path")}
     assert "/api/owner-gesture/recognize-video" in paths
@@ -358,6 +375,8 @@ def test_owner_public_routes_and_frontend_contract_are_present():
     assert "ownerLastGestureUntil" in js
     assert "ownerStandbyDismissed = true" in js
     assert "module === 'police' ? 80 : 200" in js
+    assert "ctx.translate(canvas.width, 0)" in js
+    assert "ctx.scale(-1, 1)" in js
     assert "msg.type === 'frame_error' || msg.type === 'error'" in js
     assert "ownerActionLabel(action)" in js
     assert "点赞 → 接听电话" in html

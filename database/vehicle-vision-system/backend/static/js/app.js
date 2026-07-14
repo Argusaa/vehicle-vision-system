@@ -1693,7 +1693,16 @@ const App = {
           if (module !== 'owner') runtime.busy = true;
           canvas.width = video.videoWidth;
           canvas.height = video.videoHeight;
-          ctx.drawImage(video, 0, 0);
+          if (module === 'owner') {
+            // 驾驶员前置摄像头使用镜面交互，使画面方向、手势名称和控车方向一致。
+            ctx.save();
+            ctx.translate(canvas.width, 0);
+            ctx.scale(-1, 1);
+            ctx.drawImage(video, 0, 0);
+            ctx.restore();
+          } else {
+            ctx.drawImage(video, 0, 0);
+          }
           const dataUrl = canvas.toDataURL('image/jpeg', module === 'owner' ? 0.6 : 0.7);
           ws.send(JSON.stringify({ type: 'frame', data: dataUrl.split(',')[1] }));
         }
