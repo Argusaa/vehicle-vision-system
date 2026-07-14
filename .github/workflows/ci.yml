@@ -12,6 +12,9 @@ jobs:
   windows-python-311:
     runs-on: windows-latest
     timeout-minutes: 45
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
 
     steps:
       - name: Check out repository and LFS models
