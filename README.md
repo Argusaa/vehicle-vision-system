@@ -13,9 +13,13 @@ database/vehicle-vision-system/
 - 车主手势控车
 - 日志监控与告警智能体
 
-## 启动
+## 克隆与启动
 
 ```powershell
+git lfs install
+git clone https://github.com/Argusaa/vehicle-vision-system.git
+cd vehicle-vision-system
+git lfs pull
 cd database/vehicle-vision-system
 pip install -r requirements.txt
 python setup_security.py
@@ -23,6 +27,10 @@ python run.py
 ```
 
 Windows 用户也可以进入该目录后运行 `start.bat`。
+
+交警手势识别使用本项目训练的 `lstm_yolo11s.pt`，该权重由 Git LFS
+分发。若模型校验提示文件仍为指针或不完整，请在仓库根目录运行
+`git lfs pull`。
 
 每台电脑首次运行一次 `python setup_security.py` 完成本机密钥和 HTTPS 证书初始化。
 默认访问地址为 <https://localhost:8001>，API 文档位于

@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "models": {
+    "lstm_yolo11s.pt": {
+      "architecture": "GestureRecognitionModel",
+      "format": "pytorch_state_dict",
+      "num_classes": 9,
+      "pose_model": "yolo11s-pose.pt",
+      "sha256": "2046e96b1e6ef986f5bad4a823ceba3d890131ca2be83ec903c088042c7d30c8",
+      "size_bytes": 61902,
+      "test_macro_f1": 0.8886,
+      "trained_at": "2026-07-11"
+    }
+  }
+}

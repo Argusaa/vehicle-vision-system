@@ -15,6 +15,7 @@ from app.config import settings
 from app.services.ctpgr_pose_adapter import coco_to_ctpgr
 from app.utils.helpers import ndarray_to_base64
 from app.utils.image_draw import draw_cn_text_bgr
+from app.utils.model_integrity import ModelIntegrityError, verify_model_from_manifest
 
 
 POLICE_GESTURES = {
@@ -104,6 +105,31 @@ class PoliceGestureService:
             "yolo_loaded": self._yolo_model is not None,
         }
 
+    def gesture_model_status(self) -> dict[str, Any]:
+        checkpoints = self.ctpgr_root / "checkpoints"
+        model_path = checkpoints / settings.police_gesture_model
+        manifest_path = checkpoints / "model_manifest.json"
+        try:
+            metadata = verify_model_from_manifest(
+                model_path,
+                manifest_path,
+                require_entry=model_path.name == "lstm_yolo11s.pt",
+            )
+        except ModelIntegrityError as exc:
+            return {
+                "model": model_path.name,
+                "path": str(model_path),
+                "ready": False,
+                "error": str(exc),
+            }
+        return {
+            "model": model_path.name,
+            "path": str(model_path),
+            "ready": True,
+            "sha256": metadata.get("sha256") if metadata else None,
+            "size_bytes": model_path.stat().st_size,
+        }
+
     def test_yolo_pose_model(self) -> dict[str, Any]:
         model_path = Path(settings.base_dir / settings.police_yolo_pose_model).resolve()
         exists = model_path.is_file()
@@ -150,6 +176,9 @@ class PoliceGestureService:
             return
         if not self.ctpgr_root.exists():
             raise FileNotFoundError(f"ctpgr project not found: {self.ctpgr_root}")
+        model_status = self.gesture_model_status()
+        if not model_status["ready"]:
+            raise ModelIntegrityError(model_status["error"])
         root_str = str(self.ctpgr_root)
         if root_str not in sys.path:
             sys.path.insert(0, root_str)

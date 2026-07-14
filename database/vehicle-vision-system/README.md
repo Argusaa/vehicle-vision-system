@@ -15,13 +15,20 @@
 ## 快速启动
 
 ```bash
-cd vehicle-vision-system
+git lfs install
+git lfs pull
+cd database/vehicle-vision-system
 pip install -r requirements.txt
 python setup_security.py
 python run.py
 ```
 
 或双击 `start.bat`（Windows）。
+
+交警手势 LSTM 权重位于
+`../ctpgr-pytorch-master/checkpoints/lstm_yolo11s.pt`，通过 Git LFS 分发。
+启动时会按照同目录的 `model_manifest.json` 校验文件大小和 SHA-256；若提示
+模型仍是 LFS 指针或校验失败，请在仓库根目录执行 `git lfs pull`。
 
 每台电脑、每份项目目录首次运行一次 `python setup_security.py` 即可；重复运行会保留已有密钥和证书。
 

@@ -69,7 +69,21 @@ async def _startup_checks(db):
 
     try:
         pose_info = police_gesture_service.pose_backend_info()
-        write_system_log(db, "交警手势识别后端已配置", level="INFO", detail=pose_info)
+        gesture_model_status = police_gesture_service.gesture_model_status()
+        pose_info["gesture_model"] = gesture_model_status
+        model_ready = gesture_model_status["ready"]
+        write_system_log(
+            db,
+            "交警手势识别模型已就绪" if model_ready else "交警手势识别模型未就绪",
+            level="INFO" if model_ready else "WARN",
+            detail=pose_info,
+        )
+        if not model_ready:
+            await alert_agent.handle_model_load_failure(
+                db,
+                gesture_model_status["model"],
+                RuntimeError(gesture_model_status["error"]),
+            )
     except Exception as exc:
         write_system_log(db, "交警手势识别后端检查失败", level="WARN", detail={"error": str(exc)})
         await alert_agent.handle_model_load_failure(db, "police_pose", exc)
