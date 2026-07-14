@@ -1477,7 +1477,7 @@ class OwnerGestureService:
         rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
         now = time.time()
-        if now - self._last_frame_time > 0.5:
+        if now - self._last_frame_time > self.REALTIME_DYNAMIC_WINDOW_SEC:
             self._position_history.clear()
             self._hand_center_history.clear()
             self._circle_points.clear()

@@ -244,7 +244,7 @@ def test_monitor_frontend_uses_tokens_and_has_no_user_id_filter():
     ).read_text(encoding="utf-8")
 
     assert 'id="log-user"' not in html
-    assert 'app.js?v=20260714-owner-realtime-fix2' in html
+    assert 'app.js?v=20260714-owner-realtime-fix3' in html
     assert "monitorStreamUrl('/api/monitor/stream')" in workbench
     assert workbench.count("monitorStreamUrl('/api/monitor/logs/stream')") == 2
     assert "/ws/alerts${tokenQuery}" in workbench

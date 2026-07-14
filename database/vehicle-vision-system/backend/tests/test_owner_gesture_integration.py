@@ -63,7 +63,7 @@ def test_horizontal_open_palm_sweep_is_recognized_as_wave():
     service = _service_without_models()
     service._position_history = deque(maxlen=15)
     service._hand_center_history = deque(
-        [(200, 200), (230, 202), (265, 199), (305, 201), (345, 200)],
+        [(200, 200), (255, 202), (320, 199)],
         maxlen=15,
     )
     service._circle_points = deque(maxlen=30)
@@ -375,8 +375,9 @@ def test_owner_public_routes_and_frontend_contract_are_present():
     assert "ownerLastGestureUntil" in js
     assert "ownerStandbyDismissed = true" in js
     assert "module === 'police' ? 80 : 200" in js
-    assert "ctx.translate(canvas.width, 0)" in js
-    assert "ctx.scale(-1, 1)" in js
+    assert "640 / video.videoWidth" in js
+    assert "480 / video.videoHeight" in js
+    assert "ctx.scale(-1, 1)" not in js
     assert "msg.type === 'frame_error' || msg.type === 'error'" in js
     assert "ownerActionLabel(action)" in js
     assert "点赞 → 接听电话" in html
