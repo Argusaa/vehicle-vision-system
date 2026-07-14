@@ -133,6 +133,7 @@ def ensure_initial_admin(db, preferred_password: str = "") -> tuple[str, str, st
 
 def main() -> int:
     current = read_env(ENV_FILE)
+    access_port = os.environ.get("PORT", current.get("PORT", "8001")).strip() or "8001"
     old_aes_key = current.get("AES_KEY", "").strip()
     keep_existing_key = bool(re.fullmatch(r"[0-9a-fA-F]{64}", old_aes_key))
     if keep_existing_key:
@@ -215,7 +216,7 @@ def main() -> int:
             print(f"- 初始管理员：{username}（{action_cn}，密码来自 INITIAL_ADMIN_PASSWORD，未显示）")
         else:
             print(f"- 初始管理员：{username} / {password}（{action_cn}，请立即保存）")
-    print("请使用 https://localhost:8001 访问；浏览器首次可能显示本地证书提示。")
+    print(f"请使用 https://localhost:{access_port} 访问；浏览器首次可能显示本地证书提示。")
     return 0
 
 
