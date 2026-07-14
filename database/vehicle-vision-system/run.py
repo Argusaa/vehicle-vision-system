@@ -39,7 +39,7 @@ if __name__ == "__main__":
     print(f"  {settings.app_name}")
     print(f"  Web 界面: https://localhost:{settings.port}")
     print(f"  API 文档: https://localhost:{settings.port}/api/docs")
-    print(f"  默认账号: admin / admin123")
+    print("  管理员账号: admin / 安全初始化时显示的随机密码")
     print(f"{'='*50}\n")
     uvicorn.run(
         "app.main:app",

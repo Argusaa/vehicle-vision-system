@@ -15,8 +15,8 @@ LLM_PROVIDER_PRESETS: dict[str, dict[str, str]] = {
 class Settings(BaseSettings):
     app_name: str = "车载视觉感知与人机交互系统"
     secret_key: str = "dev-secret-key-change-in-production"
-    debug: bool = True
-    host: str = "0.0.0.0"
+    debug: bool = False
+    host: str = "127.0.0.1"
     port: int = 8001
     database_url: str = ""
     database_echo: bool = False

@@ -12,7 +12,7 @@ from app.security_migration import (
     migration_needed,
     write_encrypted_backup,
 )
-from app.utils.auth import verify_password
+from app.utils.auth import hash_password, verify_password
 from app.utils.crypto import decrypt_json, decrypt_text, encrypt_json, encrypt_text
 
 
@@ -100,3 +100,28 @@ def test_security_setup_helpers_are_idempotent(tmp_path):
     key_path = tmp_path / "localhost-key.pem"
     assert generate_localhost_certificate(cert_path, key_path) is True
     assert generate_localhost_certificate(cert_path, key_path) is False
+
+
+def test_security_setup_creates_and_rotates_random_admin(tmp_path):
+    from setup_security import ensure_initial_admin
+
+    local_engine = create_engine(f"sqlite:///{(tmp_path / 'admin.db').as_posix()}")
+    Base.metadata.create_all(local_engine)
+    LocalSession = sessionmaker(bind=local_engine)
+    with LocalSession() as db:
+        created = ensure_initial_admin(db)
+        assert created is not None
+        assert created[0] == "created"
+        admin = db.query(User).filter(User.username == "admin").one()
+        assert verify_password(created[2], admin.hashed_password)
+        assert verify_password("admin123", admin.hashed_password) is False
+
+        assert ensure_initial_admin(db) is None
+        admin.hashed_password = hash_password("admin123")
+        db.commit()
+        rotated = ensure_initial_admin(db)
+        assert rotated is not None
+        assert rotated[0] == "rotated"
+        assert verify_password(rotated[2], admin.hashed_password)
+        assert verify_password("admin123", admin.hashed_password) is False
+    local_engine.dispose()
