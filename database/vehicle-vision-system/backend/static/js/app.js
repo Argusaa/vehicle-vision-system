@@ -1031,8 +1031,7 @@ const App = {
       document.getElementById('police-result').innerHTML = `${data.gesture_cn}<br><small>置信度 ${(data.confidence*100).toFixed(0)}%</small>`;
       this.loadPoliceHistory();
     } else if (module === 'owner') {
-      const isStandbyPhoneShortcut = ['answer_call', 'hang_up'].includes(data.action);
-      if (this.isOwnerStandbyLocked() && !this.isWakeResult(data) && !isStandbyPhoneShortcut) {
+      if (this.isOwnerStandbyLocked() && !this.isWakeResult(data)) {
         if (this.currentView === 'owner') this.showStandby();
         return;
       }

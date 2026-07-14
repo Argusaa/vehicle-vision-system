@@ -1,8 +1,11 @@
+from collections import deque
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.routers.owner_gesture import router as owner_router
 from app.services.owner_gesture_service import (
+    HandLandmark,
     OWNER_GESTURES,
     STANDBY_ALLOWED_ACTIONS,
     OwnerGestureService,
@@ -49,11 +52,33 @@ def test_only_one_realtime_owner_session_can_mutate_shared_gesture_state():
     owner_gesture_service.release_realtime_session(second)
 
 
-def test_point_direction_matches_unmirrored_camera_frame():
+def test_point_direction_matches_mirrored_driver_interaction():
     service = _service_without_models()
-    assert service.MIRROR_POINT_DIRECTIONS is False
-    assert service._normalize_point_direction("point_left") == "point_left"
-    assert service._normalize_point_direction("point_right") == "point_right"
+    assert service.MIRROR_POINT_DIRECTIONS is True
+    assert service._normalize_point_direction("point_left") == "point_right"
+    assert service._normalize_point_direction("point_right") == "point_left"
+
+
+def test_horizontal_open_palm_sweep_is_recognized_as_wave():
+    service = _service_without_models()
+    service._position_history = deque(maxlen=15)
+    service._hand_center_history = deque(
+        [(200, 200), (230, 202), (265, 199), (305, 201), (345, 200)],
+        maxlen=15,
+    )
+    service._circle_points = deque(maxlen=30)
+    service._swipe_mode_until = 0.0
+    service._swipe_start_center = None
+
+    hand = [SimpleNamespace(x=0.5, y=0.5) for _ in range(21)]
+    hand[HandLandmark.INDEX_FINGER_TIP] = SimpleNamespace(x=0.62, y=0.28)
+    hand[HandLandmark.WRIST] = SimpleNamespace(x=0.55, y=0.31)
+    hand[HandLandmark.MIDDLE_FINGER_MCP] = SimpleNamespace(x=0.65, y=0.31)
+
+    gesture, confidence = service._detect_motion_gesture(hand, 640, 640, "palm_open")
+
+    assert gesture == "wave"
+    assert confidence >= 0.72
 
 
 def test_vehicle_state_machine_wake_select_confirm_and_standby():
@@ -139,11 +164,11 @@ def test_circle_and_fist_adjust_each_selected_control():
             assert state[field] == expected
 
 
-def test_phone_shortcuts_remain_available_while_vehicle_ui_is_asleep():
+def test_only_wake_action_is_available_while_vehicle_ui_is_asleep():
     service = _service_without_models()
-    assert STANDBY_ALLOWED_ACTIONS == {"wake", "answer_call", "hang_up"}
+    assert STANDBY_ALLOWED_ACTIONS == {"wake"}
 
-    for action in ("answer_call", "hang_up"):
+    for action in ("confirm", "volume_adjust", "prev_page", "next_page", "answer_call", "hang_up", "go_home"):
         allowed_action, needs_confirmation, blocked = service._gate_action_for_standby(
             action,
             False,
@@ -151,9 +176,20 @@ def test_phone_shortcuts_remain_available_while_vehicle_ui_is_asleep():
             respect_standby=True,
             confirm_mode=False,
         )
-        assert allowed_action == action
+        assert allowed_action is None
         assert needs_confirmation is False
-        assert blocked is None
+        assert blocked == action
+
+    allowed_action, needs_confirmation, blocked = service._gate_action_for_standby(
+        "wake",
+        False,
+        {"is_awake": 0, "current_page": "standby"},
+        respect_standby=True,
+        confirm_mode=False,
+    )
+    assert allowed_action == "wake"
+    assert needs_confirmation is False
+    assert blocked is None
 
     state = {
         "volume": 50,
@@ -163,21 +199,8 @@ def test_phone_shortcuts_remain_available_while_vehicle_ui_is_asleep():
         "is_awake": 0,
     }
     service.apply_action_to_state("answer_call", state)
-    assert state["phone_status"] == "in_call"
-    assert state["is_awake"] == 0
-    service.apply_action_to_state("hang_up", state)
     assert state["phone_status"] == "idle"
-
-    blocked_action, needs_confirmation, blocked = service._gate_action_for_standby(
-        "next_page",
-        False,
-        {"is_awake": 0, "current_page": "standby"},
-        respect_standby=True,
-        confirm_mode=False,
-    )
-    assert blocked_action is None
-    assert needs_confirmation is False
-    assert blocked == "next_page"
+    assert state["is_awake"] == 0
 
     service._pending_confirm = {
         "gesture": "fist",
@@ -198,7 +221,7 @@ def test_phone_shortcuts_remain_available_while_vehicle_ui_is_asleep():
     assert service.has_pending_confirm() is False
 
 
-def test_uploaded_video_keeps_phone_shortcut_action_while_vehicle_ui_is_asleep():
+def test_uploaded_video_blocks_phone_shortcut_action_while_vehicle_ui_is_asleep():
     class OneFrameCapture:
         def __init__(self):
             self.read_count = 0
@@ -243,9 +266,9 @@ def test_uploaded_video_keeps_phone_shortcut_action_while_vehicle_ui_is_asleep()
             respect_standby=True,
         )
 
-    assert payload["best_result"]["action"] == "answer_call"
-    assert payload["best_result"]["vehicle_state"]["phone_status"] == "in_call"
-    assert payload["final_vehicle_state"]["phone_status"] == "in_call"
+    assert payload["best_result"]["action"] is None
+    assert payload["best_result"]["vehicle_state"]["phone_status"] == "idle"
+    assert payload["final_vehicle_state"]["phone_status"] == "idle"
     assert payload["final_vehicle_state"]["is_awake"] == 0
 
 
@@ -346,4 +369,4 @@ def test_owner_public_routes_and_frontend_contract_are_present():
     assert "this.updateOwnerFunctionHighlight(this.ownerCurrentControl)" in js
     assert "this.ownerCurrentControl = controlItems.includes(s.current_page) ? s.current_page : 'volume_up'" in js
     assert "names[this.ownerCurrentControl] || this.ownerCurrentControl" in js
-    assert "const isStandbyPhoneShortcut = ['answer_call', 'hang_up'].includes(data.action)" in js
+    assert "isStandbyPhoneShortcut" not in js

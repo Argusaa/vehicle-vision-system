@@ -20,6 +20,16 @@ from app.services.network_stream_hub import (
 
 
 ASSET_ROOT = Path(__file__).resolve().parents[2] / "yolo_lprnet_assets"
+STATIC_ROOT = Path(__file__).resolve().parents[1] / "static"
+
+
+def test_rtsp_preview_matches_local_video_dimensions():
+    css = (STATIC_ROOT / "css" / "monitoring-workbench.css").read_text(encoding="utf-8")
+
+    assert "#lpr-video-output:not([hidden]),\n#lpr-rtsp-video" in css
+    assert "max-width: 640px" in css
+    assert "max-height: 360px" in css
+    assert "#lpr-rtsp-player" in css
 
 
 def test_lpr_and_gesture_network_routes_use_same_hub_singleton():
