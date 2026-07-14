@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-python-311:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
+
+    steps:
+      - name: Check out repository and LFS models
+        uses: actions/checkout@v6
+        with:
+          lfs: true
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: database/vehicle-vision-system/requirements-dev.txt
+
+      - name: Install locked dependencies
+        working-directory: database/vehicle-vision-system
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+          python -m pip check
+
+      - name: Verify Git LFS and model manifests
+        run: |
+          git lfs fsck
+          python database/vehicle-vision-system/verify_models.py
+
+      - name: Run test suite
+        working-directory: database/vehicle-vision-system
+        env:
+          AES_KEY: "1111111111111111111111111111111111111111111111111111111111111111"
+          SECRET_KEY: "ci-only-secret-key-not-for-production-000000000000"
+        run: python -m pytest backend/tests -q
+
+      - name: Smoke-test first startup over HTTPS
+        working-directory: database/vehicle-vision-system
+        env:
+          INITIAL_ADMIN_PASSWORD: "ci-only-admin-password"
+        shell: pwsh
+        run: |
+          python setup_security.py
+          $stdout = Join-Path $env:RUNNER_TEMP "vehicle-vision.out.log"
+          $stderr = Join-Path $env:RUNNER_TEMP "vehicle-vision.err.log"
+          $server = Start-Process python -ArgumentList "run.py" -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          try {
+            $ready = $false
+            foreach ($attempt in 1..30) {
+              curl.exe -k --fail --silent --max-time 3 https://localhost:8001/ | Out-Null
+              if ($LASTEXITCODE -eq 0) {
+                $ready = $true
+                break
+              }
+              Start-Sleep -Seconds 2
+            }
+            if (-not $ready) {
+              Get-Content $stdout -ErrorAction SilentlyContinue
+              Get-Content $stderr -ErrorAction SilentlyContinue
+              throw "HTTPS startup smoke test failed"
+            }
+          }
+          finally {
+            Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
+          }

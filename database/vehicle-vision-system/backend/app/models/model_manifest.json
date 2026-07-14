@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "models": {
+    "fh02.pth": {
+      "architecture": "CCPD RPNet fh02",
+      "format": "pytorch_state_dict",
+      "license": "MIT",
+      "sha256": "a42f3f01697a6af94febb54a1eb5bbedb5655a6cc6d03ee98ab9eab8c85ac7d4",
+      "size_bytes": 220319777,
+      "source": "https://github.com/detectRecog/CCPD"
+    }
+  }
+}

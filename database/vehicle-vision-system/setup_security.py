@@ -102,8 +102,38 @@ def generate_localhost_certificate(cert_path: Path, key_path: Path) -> bool:
     return True
 
 
+def ensure_initial_admin(db, preferred_password: str = "") -> tuple[str, str, str] | None:
+    """Create or rotate the local demo administrator without a fixed password."""
+
+    from app.models.user import User
+    from app.utils.auth import hash_password, verify_password
+    from app.utils.privacy import protect_email
+
+    username = "admin"
+    admin = db.query(User).filter(User.username == username).first()
+    action = "created"
+    if admin is not None and not verify_password("admin123", admin.hashed_password):
+        return None
+
+    password = preferred_password.strip() or secrets.token_urlsafe(14)
+    if admin is None:
+        admin = User(
+            username=username,
+            hashed_password=hash_password(password),
+            is_active=True,
+            **protect_email("admin@localhost"),
+        )
+        db.add(admin)
+    else:
+        action = "rotated"
+        admin.hashed_password = hash_password(password)
+    db.commit()
+    return action, username, password
+
+
 def main() -> int:
     current = read_env(ENV_FILE)
+    access_port = os.environ.get("PORT", current.get("PORT", "8001")).strip() or "8001"
     old_aes_key = current.get("AES_KEY", "").strip()
     keep_existing_key = bool(re.fullmatch(r"[0-9a-fA-F]{64}", old_aes_key))
     if keep_existing_key:
@@ -144,6 +174,7 @@ def main() -> int:
     init_db()
     db = SessionLocal()
     backup_path: Path | None = None
+    admin_credentials: tuple[str, str, str] | None = None
     try:
         previous_keys = [old_aes_key] if old_aes_key and old_aes_key != new_aes_key else []
         validate_migration_keys(db, previous_keys=previous_keys)
@@ -152,6 +183,10 @@ def main() -> int:
             counts = migrate_sensitive_data(db, previous_keys=previous_keys)
         else:
             counts = {"users": 0, "passwords": 0, "verification_codes": 0, "plate_records": 0}
+        admin_credentials = ensure_initial_admin(
+            db,
+            preferred_password=os.environ.get("INITIAL_ADMIN_PASSWORD", ""),
+        )
     finally:
         db.close()
 
@@ -164,7 +199,7 @@ def main() -> int:
     if PENDING_KEY_FILE.exists():
         PENDING_KEY_FILE.unlink()
 
-    print("安全初始化完成。以后正常启动无需再次运行本脚本。")
+    print("安全初始化完成；本脚本可安全重复运行。")
     print(f"- AES 密钥：{'保留已有安全密钥' if keep_existing_key else '已为本机随机生成'}")
     print(f"- HTTPS 证书：{'已生成' if certificate_created else '保留已有证书'}")
     if backup_path:
@@ -174,7 +209,14 @@ def main() -> int:
             **counts
         )
     )
-    print("请使用 https://localhost:8001 访问；浏览器首次可能显示本地证书提示。")
+    if admin_credentials:
+        action, username, password = admin_credentials
+        action_cn = "已创建" if action == "created" else "已替换不安全的默认密码"
+        if os.environ.get("INITIAL_ADMIN_PASSWORD", "").strip():
+            print(f"- 初始管理员：{username}（{action_cn}，密码来自 INITIAL_ADMIN_PASSWORD，未显示）")
+        else:
+            print(f"- 初始管理员：{username} / {password}（{action_cn}，请立即保存）")
+    print(f"请使用 https://localhost:{access_port} 访问；浏览器首次可能显示本地证书提示。")
     return 0
 
 

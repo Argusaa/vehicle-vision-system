@@ -14,20 +14,29 @@
 
 ## 快速启动
 
-```bash
-cd vehicle-vision-system
-pip install -r requirements.txt
-python setup_security.py
-python run.py
+要求 Windows 10/11、64 位 Python 3.11、Git 与 Git LFS。在仓库根目录执行：
+
+```powershell
+git lfs install
+git lfs pull
+cd database/vehicle-vision-system
+start.bat
 ```
 
-或双击 `start.bat`（Windows）。
+也可以进入本目录后双击 `start.bat`。脚本会自动创建 `.venv`、安装依赖、
+检查模型、初始化 SQLite/密钥/HTTPS 证书并启动服务。首次初始化会在终端显示
+随机生成的 `admin` 密码，请立即保存；系统不再使用固定的 `admin123`。
 
-每台电脑、每份项目目录首次运行一次 `python setup_security.py` 即可；重复运行会保留已有密钥和证书。
+交警手势 LSTM 权重位于
+`../ctpgr-pytorch-master/checkpoints/lstm_yolo11s.pt`，通过 Git LFS 分发。
+启动时会按照同目录的 `model_manifest.json` 校验文件大小和 SHA-256；若提示
+模型仍是 LFS 指针或校验失败，请在仓库根目录执行 `git lfs pull`。
+
+每台电脑、每份项目目录首次运行一次 `python setup_security.py` 即可；重复运行会保留已有密钥、证书和安全的管理员密码。
 
 访问 https://localhost:8001（本地自签名证书首次访问可能出现浏览器安全提示）
 
-- 默认账号：`admin` / `admin123`
+- 管理员账号：`admin` / 首次安全初始化时显示的随机密码
 - API 文档：https://localhost:8001/api/docs
 
 ## 项目结构
@@ -63,7 +72,9 @@ vehicle-vision-system/
 
 ## 配置
 
-复制 `.env.example` 为 `.env` 并按需修改：
+默认数据库为 `data/app.db`（SQLite），无需安装 SQL Server。`setup_security.py`
+会创建安全的 `.env`；需要 LLM、邮件、Webhook 或 SQL Server 时，再参考
+`.env.example` 添加相应配置：
 
 ```env
 LLM_PROVIDER=openai       # openai/qwen/deepseek/zhipu/custom
@@ -117,6 +128,8 @@ SMTP_USE_TLS=true
 
 ## 注意事项
 
-- 模型权重与 MediaPipe task 文件需放在项目约定的模型目录；缺失时接口会返回模型状态或降级结果
+- 必需权重通过 Git LFS 分发；可运行 `python verify_models.py` 独立校验
+- MediaPipe task 文件会在首次使用相应功能时下载
 - 实时摄像头功能需 HTTPS 或 localhost 环境
-- 推荐使用项目启动脚本指定的 Python 3.11 环境
+- 默认仅监听 `127.0.0.1`；如需局域网访问，请自行评估风险后修改 `HOST`
+- 推荐使用 `start.bat` 管理 Python 3.11 虚拟环境

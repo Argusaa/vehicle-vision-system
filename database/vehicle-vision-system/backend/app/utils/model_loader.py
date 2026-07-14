@@ -2,13 +2,13 @@ from pathlib import Path
 import logging
 import urllib.request
 
+from app.utils.model_integrity import verify_model_from_manifest
+
 logger = logging.getLogger(__name__)
 
 MODELS = {
     "pose_landmarker_lite.task": "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
     "hand_landmarker.task": "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
-    # CCPD RPNet fh02.pth (official pretrained, ECCV 2018)
-    "fh02.pth": "https://drive.google.com/uc?export=download&id=1YYVWgbHksj25vV6bnCX_AWokFjhgIMhv&confirm=t",
     "vehicle_detector.pt": "",
 }
 
@@ -29,6 +29,9 @@ def get_model_path(name: str) -> str:
     model_dir = Path(__file__).resolve().parent.parent / "models"
     model_dir.mkdir(parents=True, exist_ok=True)
     path = model_dir / name
+    if name == "fh02.pth":
+        verify_model_from_manifest(path, model_dir / "model_manifest.json")
+        return str(path)
     if path.exists() and path.stat().st_size > 1024:
         return str(path)
     url = MODELS.get(name)

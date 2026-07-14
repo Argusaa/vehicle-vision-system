@@ -34,8 +34,8 @@ CONFIRM_REQUIRED_ACTIONS = {"confirm"}
 CONFIRM_CONFIDENCE_THRESHOLD = 0.85
 ACTION_CONFIDENCE_THRESHOLD = 0.78
 MOTION_CONFIDENCE_THRESHOLD = 0.72
-# 接听/挂断属于无需唤醒车机界面的快捷动作，休眠时也应可用。
-STANDBY_ALLOWED_ACTIONS = {"wake", "answer_call", "hang_up"}
+# 车辆休眠时只响应张掌唤醒，其他手势必须等待唤醒后执行。
+STANDBY_ALLOWED_ACTIONS = {"wake"}
 
 
 class HandLandmark:
@@ -70,8 +70,7 @@ HAND_CONNECTIONS = [
 class OwnerGestureService:
     """车主手势控车: MediaPipe Hand Landmarker + 启发式规则 + 持续时间/复合确认防抖"""
 
-    # 浏览器预览和上传到后端的画面都未做水平翻转，直接采用图像坐标方向。
-    # 若此处再次镜像，会造成“向左指识别为向右指”。
+    # 输入帧统一按图像坐标判断方向；驾驶员前置实时摄像头由前端在送帧时镜像。
     MIRROR_POINT_DIRECTIONS = False
     REALTIME_DYNAMIC_WINDOW_SEC = 1.0
     REALTIME_DYNAMIC_MIN_SCORE = {
@@ -108,7 +107,8 @@ class OwnerGestureService:
         "circle": 0.22,
         "point_left": 0.18,
         "point_right": 0.18,
-        "wave": 0.12,
+        # 挥手本身已经通过运动轨迹确认；实时流只有约 5 FPS，不能再等待下一帧。
+        "wave": 0.0,
         "thumb_up": 0.22,
         "thumb_down": 0.22,
     }
@@ -118,7 +118,7 @@ class OwnerGestureService:
         "circle": 0.24,
         "point_left": 0.20,
         "point_right": 0.20,
-        "wave": 0.10,
+        "wave": 0.0,
         "thumb_up": 0.22,
         "thumb_down": 0.22,
     }
@@ -750,8 +750,7 @@ class OwnerGestureService:
             and recent_hand_moving
             and center_y_ratio < 0.56
             and x_range > w * 0.075
-            and diagonal_ratio > 0.40
-            and path_len > x_range * 1.22
+            and x_range > y_range * 1.25
             and abs(dx_net) > w * 0.045
         )
         if broad_wave_ok:
@@ -1478,7 +1477,7 @@ class OwnerGestureService:
         rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
         now = time.time()
-        if now - self._last_frame_time > 0.5:
+        if now - self._last_frame_time > self.REALTIME_DYNAMIC_WINDOW_SEC:
             self._position_history.clear()
             self._hand_center_history.clear()
             self._circle_points.clear()
@@ -1509,6 +1508,9 @@ class OwnerGestureService:
         elif vehicle_state.get("is_awake"):
             self._session_awake = True
         confirm_mode = self.has_pending_confirm(context_id)
+        if is_standby and confirm_mode:
+            self._set_pending_for(context_id, None)
+            confirm_mode = False
 
         if detected_hands:
             self._last_hand_seen_time = time.time()
@@ -1761,14 +1763,13 @@ class OwnerGestureService:
         confirm_mode: bool,
         context_id: int | None = None,
     ) -> tuple[str | None, bool, str | None]:
-        """休眠时保留电话快捷动作，只拦截需要先唤醒界面的控车动作。"""
+        """车辆休眠时只放行唤醒动作，并清除不能继续执行的待确认动作。"""
         blocked_action = None
         pending = self._pending_for(context_id)
         pending_action = pending.get("action") if needs_confirmation and pending else None
         candidate_action = action or pending_action
         if (
             respect_standby
-            and not confirm_mode
             and not vehicle_state.get("is_awake")
             and candidate_action
             and candidate_action not in STANDBY_ALLOWED_ACTIONS
@@ -2059,6 +2060,8 @@ class OwnerGestureService:
     # ---------------------- 车辆控制 ----------------------
     def apply_action_to_state(self, action: str, state: dict) -> dict:
         if not action:
+            return state
+        if not state.get("is_awake") and action != "wake":
             return state
         control_items = ["volume_up", "volume_down", "temp_up", "temp_down"]
         current = state.get("current_page", "volume_up")

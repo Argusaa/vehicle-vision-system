@@ -1,4 +1,9 @@
 .idea
 __pycache__
-checkpoints
 generated
+
+# Checkpoints are training artifacts by default. The production YOLO11s LSTM
+# and its manifest are the only checkpoints distributed with the application.
+checkpoints/*
+!checkpoints/lstm_yolo11s.pt
+!checkpoints/model_manifest.json

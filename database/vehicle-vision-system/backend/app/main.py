@@ -11,10 +11,7 @@ from fastapi.responses import FileResponse
 from fastapi.responses import RedirectResponse
 from app.config import settings
 from app.database import init_db, check_db_connection
-from app.models.user import User
 from app.database import SessionLocal
-from app.utils.auth import hash_password
-from app.utils.privacy import protect_email
 from app.routers import auth, lpr, police_gesture, owner_gesture, monitor, websocket, scenario
 from app.services.alert_agent import alert_agent
 from app.services.llm_service import llm_service
@@ -69,7 +66,21 @@ async def _startup_checks(db):
 
     try:
         pose_info = police_gesture_service.pose_backend_info()
-        write_system_log(db, "交警手势识别后端已配置", level="INFO", detail=pose_info)
+        gesture_model_status = police_gesture_service.gesture_model_status()
+        pose_info["gesture_model"] = gesture_model_status
+        model_ready = gesture_model_status["ready"]
+        write_system_log(
+            db,
+            "交警手势识别模型已就绪" if model_ready else "交警手势识别模型未就绪",
+            level="INFO" if model_ready else "WARN",
+            detail=pose_info,
+        )
+        if not model_ready:
+            await alert_agent.handle_model_load_failure(
+                db,
+                gesture_model_status["model"],
+                RuntimeError(gesture_model_status["error"]),
+            )
     except Exception as exc:
         write_system_log(db, "交警手势识别后端检查失败", level="WARN", detail={"error": str(exc)})
         await alert_agent.handle_model_load_failure(db, "police_pose", exc)
@@ -80,20 +91,6 @@ async def lifespan(app: FastAPI):
     init_db()
     db = SessionLocal()
     try:
-        try:
-            admin = db.query(User).filter(User.username == "admin").first()
-        except Exception:
-            admin = None
-        if not admin:
-            db.execute(
-                User.__table__.insert().values(
-                    username="admin",
-                    hashed_password=hash_password("admin123"),
-                    is_active=True,
-                    **protect_email("admin@demo.com"),
-                )
-            )
-            db.commit()
         await _startup_checks(db)
     finally:
         db.close()

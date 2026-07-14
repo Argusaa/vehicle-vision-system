@@ -1031,8 +1031,7 @@ const App = {
       document.getElementById('police-result').innerHTML = `${data.gesture_cn}<br><small>置信度 ${(data.confidence*100).toFixed(0)}%</small>`;
       this.loadPoliceHistory();
     } else if (module === 'owner') {
-      const isStandbyPhoneShortcut = ['answer_call', 'hang_up'].includes(data.action);
-      if (this.isOwnerStandbyLocked() && !this.isWakeResult(data) && !isStandbyPhoneShortcut) {
+      if (this.isOwnerStandbyLocked() && !this.isWakeResult(data)) {
         if (this.currentView === 'owner') this.showStandby();
         return;
       }
@@ -1692,9 +1691,13 @@ const App = {
         const canSend = module === 'owner' || !runtime.busy;
         if (video.readyState >= 2 && ws.readyState === WebSocket.OPEN && canSend) {
           if (module !== 'owner') runtime.busy = true;
-          canvas.width = video.videoWidth;
-          canvas.height = video.videoHeight;
-          ctx.drawImage(video, 0, 0);
+          const ownerScale = module === 'owner'
+            ? Math.min(1, 640 / video.videoWidth, 480 / video.videoHeight)
+            : 1;
+          canvas.width = Math.max(1, Math.round(video.videoWidth * ownerScale));
+          canvas.height = Math.max(1, Math.round(video.videoHeight * ownerScale));
+          // 识别帧与左侧播放画面保持同一方向；仅缩放，不做水平镜像。
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
           const dataUrl = canvas.toDataURL('image/jpeg', module === 'owner' ? 0.6 : 0.7);
           ws.send(JSON.stringify({ type: 'frame', data: dataUrl.split(',')[1] }));
         }
